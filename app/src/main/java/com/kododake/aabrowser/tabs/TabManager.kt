@@ -109,7 +109,7 @@ class TabManager(
 
         when {
             intentUrl != null -> {
-                createBrowserTab(initialUrl = BrowserPreferences.formatNavigableUrl(intentUrl), activate = true)
+                createBrowserTab(initialUrl = BrowserPreferences.formatNavigableUrl(intentUrl, activity), activate = true)
             }
             !homePageUrl.isNullOrBlank() -> {
                 createBrowserTab(initialUrl = homePageUrl, activate = true)

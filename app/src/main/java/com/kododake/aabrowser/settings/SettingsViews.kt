@@ -38,7 +38,9 @@ import com.kododake.aabrowser.data.BrowserPreferences
 import com.kododake.aabrowser.model.AppThemeMode
 import com.kododake.aabrowser.model.QuickActionButtonMode
 import com.kododake.aabrowser.model.QuickActionButtonPosition
+import com.kododake.aabrowser.model.SearchEngine
 import com.kododake.aabrowser.model.UserAgentProfile
+import com.kododake.aabrowser.web.AdBlocker
 
 data class SettingsCallbacks(
     val onClose: () -> Unit = {},
@@ -49,7 +51,8 @@ data class SettingsCallbacks(
     val onInAppControlsChanged: () -> Unit = {},
     val onPickStartPageBackground: (() -> Unit)? = null,
     val onClearStartPageBackground: (() -> Unit)? = null,
-    val onSponsorsVisibilityChanged: () -> Unit = {}
+    val onSponsorsVisibilityChanged: () -> Unit = {},
+    val onShieldsChanged: () -> Unit = {}
 )
 
 object SettingsViews {
@@ -846,6 +849,96 @@ object SettingsViews {
         startPageCard.addView(startPageInner)
         container.addView(startPageCard)
 
+        val searchCard = createStyledCard()
+        val searchInner = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(16), dp(8), dp(16))
+        }
+        searchInner.addView(
+            createSectionTitle(
+                context.getString(R.string.settings_search_engine),
+                R.drawable.search_24px,
+                bottomPaddingDp = 4
+            )
+        )
+        searchInner.addView(TextView(context).apply {
+            text = context.getString(R.string.settings_search_engine_description)
+            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
+            setTextColor(onSurfaceVariantColor)
+            setPadding(dp(12), 0, dp(12), dp(8))
+        })
+
+        var currentEngine = BrowserPreferences.getSearchEngine(context)
+        val engineOrder = SearchEngine.entries.toList()
+        var searchEngineStatusView: TextView? = null
+        val searchEngineRow = createSettingRow(
+            title = context.getString(R.string.settings_search_engine),
+            statusText = context.getString(currentEngine.titleRes),
+            iconRes = R.drawable.search_24px
+        ) {
+            val engineLabels = engineOrder.map { context.getString(it.titleRes) }.toTypedArray()
+            MaterialAlertDialogBuilder(context, com.google.android.material.R.style.ThemeOverlay_Material3_MaterialAlertDialog)
+                .setTitle(R.string.settings_search_engine_dialog_title)
+                .setSingleChoiceItems(engineLabels, engineOrder.indexOf(currentEngine)) { dialog, which ->
+                    dialog.dismiss()
+                    val selected = engineOrder[which]
+                    if (selected != currentEngine) {
+                        currentEngine = selected
+                        BrowserPreferences.setSearchEngine(context, selected)
+                        searchEngineStatusView?.text = context.getString(selected.titleRes)
+                    }
+                }
+                .show()
+        }
+        searchEngineStatusView =
+            ((searchEngineRow.getChildAt(1) as? LinearLayout)?.getChildAt(1) as? TextView)
+        searchInner.addView(searchEngineRow)
+
+        searchCard.addView(searchInner)
+        container.addView(searchCard)
+
+        val shieldsCard = createStyledCard()
+        val shieldsInner = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(16), dp(8), dp(16))
+        }
+        shieldsInner.addView(
+            createSectionTitle(
+                context.getString(R.string.settings_shields),
+                R.drawable.security_24px,
+                bottomPaddingDp = 4
+            )
+        )
+
+        fun shieldsStatusText(enabled: Boolean): String = if (enabled) {
+            context.getString(R.string.settings_shields_blocked_count, AdBlocker.blockedThisSession.toInt())
+        } else {
+            context.getString(R.string.settings_shields_disabled)
+        }
+
+        val shieldsStatusView = TextView(context).apply {
+            text = shieldsStatusText(BrowserPreferences.isShieldsEnabled(context))
+            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
+            setTextColor(onSurfaceVariantColor)
+            setPadding(dp(12), 0, dp(12), dp(8))
+        }
+        shieldsInner.addView(shieldsStatusView)
+
+        val shieldsRow = createSettingSwitchRow(
+            title = context.getString(R.string.settings_shields_title),
+            description = context.getString(R.string.settings_shields_description),
+            iconRes = R.drawable.security_24px,
+            isCheckedValue = BrowserPreferences.isShieldsEnabled(context)
+        ) { isChecked ->
+            BrowserPreferences.setShieldsEnabled(context, isChecked)
+            shieldsStatusView.text = shieldsStatusText(isChecked)
+            callbacks.onShieldsChanged()
+        }
+        shieldsInner.addView(shieldsRow)
+
+        shieldsCard.addView(shieldsInner)
+        container.addView(shieldsCard)
+
         val uaCard = createStyledCard()
         val uaInner = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -1145,7 +1238,8 @@ object SettingsViews {
             onThemeChanged = { (context as? android.app.Activity)?.recreate() },
             onPageDarkeningChanged = { (context as? android.app.Activity)?.recreate() },
             onScaleChanged = { (context as? android.app.Activity)?.recreate() },
-            onHomePageChanged = { (context as? android.app.Activity)?.recreate() }
+            onHomePageChanged = { (context as? android.app.Activity)?.recreate() },
+            onShieldsChanged = { (context as? android.app.Activity)?.recreate() }
         )
     )
 }

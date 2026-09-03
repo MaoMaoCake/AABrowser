@@ -124,6 +124,17 @@
     <string name="settings_start_page_background_custom">Background: custom image selected</string>
     <string name="settings_start_page_choose_background">Choose background</string>
     <string name="settings_start_page_clear_background">Clear background</string>
+    <string name="settings_search_engine">Search engine</string>
+    <string name="settings_search_engine_description">Used when what you type in the address bar is not a web address.</string>
+    <string name="settings_search_engine_dialog_title">Select search engine</string>
+    <string name="settings_search_engine_brave">Brave Search</string>
+    <string name="settings_search_engine_google">Google</string>
+    <string name="settings_search_engine_duckduckgo">DuckDuckGo</string>
+    <string name="settings_shields">Shields</string>
+    <string name="settings_shields_title">Block ads and trackers</string>
+    <string name="settings_shields_description">Blocks known ad and tracker domains. Pages load faster and use less data.</string>
+    <string name="settings_shields_blocked_count">%1$d blocked this session</string>
+    <string name="settings_shields_disabled">Blocking is off</string>
     <string name="settings_user_agent">User agent</string>
     <string name="settings_user_agent_description">Choose how AABrowser identifies itself when loading pages.</string>
     <string name="settings_user_agent_android">Android Chrome (default)</string>

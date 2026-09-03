@@ -144,6 +144,11 @@ class OverlayManager(
                 },
                 onSponsorsVisibilityChanged = {
                     startPageManager.refreshStartPage()
+                },
+                onShieldsChanged = {
+                    tabManager.browserTabs.forEach { tab ->
+                        tab.webView.reload()
+                    }
                 }
             )
             

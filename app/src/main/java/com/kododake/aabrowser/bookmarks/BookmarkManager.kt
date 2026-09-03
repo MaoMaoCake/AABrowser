@@ -314,7 +314,7 @@ class BookmarkManager(
             Toast.makeText(activity, R.string.start_page_add_disabled_by_home_page, Toast.LENGTH_SHORT).show()
             return
         }
-        val normalizedUrl = BrowserPreferences.formatNavigableUrl(url)
+        val normalizedUrl = BrowserPreferences.formatNavigableUrl(url, activity)
         val slots = BrowserPreferences.getStartPageSlots(activity)
         val existingSlot = BrowserPreferences.findStartPageSlot(activity, normalizedUrl)
         var selectedSlot = when {

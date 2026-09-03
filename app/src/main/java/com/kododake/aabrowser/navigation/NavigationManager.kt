@@ -46,14 +46,14 @@ class NavigationManager(
     }
 
     fun loadUrlFromIntent(rawUrl: String) {
-        val navigable = BrowserPreferences.formatNavigableUrl(rawUrl.trim())
+        val navigable = BrowserPreferences.formatNavigableUrl(rawUrl.trim(), activity)
         if (navigable.isNotEmpty()) {
             navigateActiveTabTo(navigable, closeMenuAfterNavigate = true)
         }
     }
 
     fun navigateToAddress(raw: String, closeMenuAfterNavigate: Boolean) {
-        val navigable = BrowserPreferences.formatNavigableUrl(raw)
+        val navigable = BrowserPreferences.formatNavigableUrl(raw, activity)
         if (navigable.isNotEmpty()) {
             navigateActiveTabTo(navigable, closeMenuAfterNavigate)
         }

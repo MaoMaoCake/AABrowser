@@ -23,6 +23,7 @@ import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.kododake.aabrowser.R
+import com.kododake.aabrowser.data.BrowserPreferences
 import com.kododake.aabrowser.model.UserAgentProfile
 
 data class BrowserCallbacks(
@@ -51,6 +52,10 @@ fun configureWebView(
     userAgentProfile: UserAgentProfile = UserAgentProfile.ANDROID_CHROME,
     allowDarkPages: Boolean = false
 ) {
+    val appContext = webView.context.applicationContext
+    // Written on the UI thread, read by shouldInterceptRequest on WebView's background thread.
+    val currentPageUrl = java.util.concurrent.atomic.AtomicReference<String?>(null)
+
     with(webView) {
         setBackgroundColor(Color.TRANSPARENT)
 
@@ -97,6 +102,21 @@ fun configureWebView(
         //setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                if (!BrowserPreferences.isShieldsEnabled(appContext)) {
+                    return null
+                }
+                AdBlocker.ensureLoaded(appContext)
+                return AdBlocker.interceptOrNull(
+                    requestUrl = request.url,
+                    pageUrl = currentPageUrl.get(),
+                    isMainFrame = request.isForMainFrame
+                )
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
                 if (handleCleartextIfNeeded(view, uri, callbacks, onPageStart = false)) {
@@ -118,6 +138,7 @@ fun configureWebView(
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                currentPageUrl.set(url)
                 val stringUrl = url
                 if (stringUrl == null) {
                     return
@@ -137,6 +158,7 @@ fun configureWebView(
 
             override fun onPageFinished(view: WebView, url: String?) {
                 super.onPageFinished(view, url)
+                currentPageUrl.set(url)
                 view.evaluateJavascript(SpeechRecognitionBridge.POLYFILL_JS, null)
                 url?.let(callbacks.onUrlChange)
             }

@@ -8,6 +8,7 @@ import android.util.Patterns
 import com.kododake.aabrowser.model.AppThemeMode
 import com.kododake.aabrowser.model.QuickActionButtonMode
 import com.kododake.aabrowser.model.QuickActionButtonPosition
+import com.kododake.aabrowser.model.SearchEngine
 import com.kododake.aabrowser.model.UserAgentProfile
 import kotlin.math.roundToInt
 import org.json.JSONArray
@@ -48,8 +49,9 @@ object BrowserPreferences {
     private const val KEY_HOME_PAGE_URL = "home_page_url"
     private const val KEY_ALLOWED_LOCATION_HOSTS = "allowed_location_hosts"
     private const val KEY_HIDE_SPONSORS = "hide_sponsors"
+    private const val KEY_SEARCH_ENGINE = "search_engine"
+    private const val KEY_SHIELDS_ENABLED = "shields_enabled"
     private const val DEFAULT_URL = "https://www.google.com"
-    private const val SEARCH_TEMPLATE = "https://www.google.com/search?q=%s"
 
     private val DEFAULT_BOOKMARKS = listOf(
         "https://www.google.com",
@@ -348,7 +350,7 @@ object BrowserPreferences {
             .orEmpty()
         if (stored.isBlank()) return null
 
-        val normalized = formatNavigableUrl(stored)
+        val normalized = formatNavigableUrl(stored, context)
         return normalized.takeIf { isHttpOrHttps(it) }
     }
 
@@ -359,7 +361,7 @@ object BrowserPreferences {
             return
         }
 
-        val normalized = formatNavigableUrl(value)
+        val normalized = formatNavigableUrl(value, context)
         if (!isHttpOrHttps(normalized)) return
 
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -396,7 +398,7 @@ object BrowserPreferences {
     }
 
     fun addBookmark(context: Context, url: String): Boolean {
-        val navigable = formatNavigableUrl(url)
+        val navigable = formatNavigableUrl(url, context)
         val bookmarks = loadBookmarks(context)
         if (bookmarks.any { it.equals(navigable, ignoreCase = false) }) {
             return false
@@ -437,7 +439,7 @@ object BrowserPreferences {
     }
 
     fun findStartPageSlot(context: Context, url: String): Int {
-        val normalized = formatNavigableUrl(url)
+        val normalized = formatNavigableUrl(url, context)
         return loadStartPageSlots(context).indexOfFirst { it == normalized }
     }
 
@@ -454,7 +456,7 @@ object BrowserPreferences {
             return
         }
 
-        val navigable = formatNavigableUrl(normalized)
+        val navigable = formatNavigableUrl(normalized, context)
         if (!isHttpOrHttps(navigable)) return
 
         val existingIndex = slots.indexOfFirst { it == navigable }
@@ -490,7 +492,37 @@ object BrowserPreferences {
             .apply()
     }
 
-    fun formatNavigableUrl(raw: String): String {
+    fun getSearchEngine(context: Context): SearchEngine {
+        val key = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_SEARCH_ENGINE, null)
+        return SearchEngine.fromKey(key)
+    }
+
+    fun setSearchEngine(context: Context, engine: SearchEngine) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SEARCH_ENGINE, engine.storageKey)
+            .apply()
+    }
+
+    fun isShieldsEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SHIELDS_ENABLED, true)
+    }
+
+    fun setShieldsEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SHIELDS_ENABLED, enabled)
+            .apply()
+    }
+
+    /**
+     * Turns raw address-bar input into something navigable. Anything that does not parse as a
+     * URL becomes a search against the configured engine; pass [context] so the user's choice
+     * is honoured, otherwise the built-in default engine is used.
+     */
+    fun formatNavigableUrl(raw: String, context: Context? = null): String {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return DEFAULT_URL
         val lower = trimmed.lowercase()
@@ -499,11 +531,14 @@ object BrowserPreferences {
         return if (Patterns.WEB_URL.matcher(candidate).matches()) {
             candidate
         } else {
-            toSearchUrl(trimmed)
+            toSearchUrl(trimmed, context)
         }
     }
 
-    fun toSearchUrl(query: String): String = SEARCH_TEMPLATE.format(Uri.encode(query))
+    fun toSearchUrl(query: String, context: Context? = null): String {
+        val engine = context?.let { getSearchEngine(it) } ?: SearchEngine.DEFAULT
+        return engine.buildSearchUrl(query)
+    }
 
     fun defaultUrl(): String = DEFAULT_URL
 
