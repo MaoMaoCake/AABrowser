@@ -25,6 +25,8 @@ import androidx.webkit.WebViewFeature
 import com.kododake.aabrowser.R
 import com.kododake.aabrowser.data.BrowserPreferences
 import com.kododake.aabrowser.model.UserAgentProfile
+import com.kododake.aabrowser.web.adblock.AdBlocker
+import com.kododake.aabrowser.web.adblock.UboScriptletRuntime
 
 data class BrowserCallbacks(
     val onUrlChange: (String) -> Unit = {},

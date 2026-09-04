@@ -16,7 +16,7 @@ global.__aabrowserScriptletBridge = {
     },
 };
 
-const runtime = path.join(__dirname, '../app/src/main/assets/ubo-scriptlets.js');
+const runtime = path.join(__dirname, '../app/src/main/assets/adblock/ubo-scriptlets.js');
 eval(fs.readFileSync(runtime, 'utf8'));
 if (global.__aabrowserRuntimeProbe !== true) {
     throw new Error('uBO scriptlet runtime probe failed');

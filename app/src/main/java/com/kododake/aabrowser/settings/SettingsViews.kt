@@ -40,8 +40,8 @@ import com.kododake.aabrowser.model.QuickActionButtonMode
 import com.kododake.aabrowser.model.QuickActionButtonPosition
 import com.kododake.aabrowser.model.SearchEngine
 import com.kododake.aabrowser.model.UserAgentProfile
-import com.kododake.aabrowser.web.AdBlocker
-import com.kododake.aabrowser.web.RemoteFilterListManager
+import com.kododake.aabrowser.web.adblock.AdBlocker
+import com.kododake.aabrowser.web.adblock.RemoteFilterListManager
 
 data class SettingsCallbacks(
     val onClose: () -> Unit = {},
