@@ -2,9 +2,13 @@ package com.kododake.aabrowser.web.adblock
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
 import android.webkit.WebResourceResponse
 import java.io.ByteArrayInputStream
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /** Android/WebView adapter around the uBlock-style [FilterEngine]. */
@@ -17,6 +21,16 @@ object AdBlocker {
     @Volatile
     private var loaded = false
 
+    private var loading = false
+    private val readyCallbacks = ArrayList<() -> Unit>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val loader = Executors.newSingleThreadExecutor { runnable ->
+        Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            runnable.run()
+        }, "adblock-filter-loader")
+    }
+
     private val sessionBlockCount = AtomicLong(0)
 
     val blockedThisSession: Long
@@ -26,15 +40,58 @@ object AdBlocker {
         sessionBlockCount.set(0)
     }
 
-    /** Parses the bundled static filter list once. Safe to call from any thread. */
-    fun ensureLoaded(context: Context) {
-        if (loaded) return
-        synchronized(this) {
-            if (loaded) return
-            engine = loadEngine(context.applicationContext)
-            loaded = true
+    /** Starts parsing the static filter lists off the main thread. */
+    fun ensureLoadedAsync(context: Context) {
+        runWhenLoaded(context) {}
+    }
+
+    /**
+     * Runs [action] on the main thread once all filters are compiled.
+     * Navigation uses this to ensure the first request cannot bypass Shields.
+     */
+    fun runWhenLoaded(context: Context, action: () -> Unit) {
+        if (loaded) {
+            runOnMainThread(action)
+            return
         }
-        RemoteFilterListManager.scheduleAutoUpdate(context.applicationContext)
+
+        val appContext = context.applicationContext
+        var startLoader = false
+        var runImmediately = false
+        synchronized(this) {
+            if (loaded) {
+                runImmediately = true
+            } else {
+                readyCallbacks += action
+                if (!loading) {
+                    loading = true
+                    startLoader = true
+                }
+            }
+        }
+        if (runImmediately) {
+            runOnMainThread(action)
+            return
+        }
+        if (!startLoader) return
+
+        loader.execute {
+            val replacement = loadEngine(appContext)
+            val callbacks: List<() -> Unit>
+            synchronized(this) {
+                engine = replacement
+                loaded = true
+                loading = false
+                callbacks = readyCallbacks.toList()
+                readyCallbacks.clear()
+            }
+            mainHandler.post { callbacks.forEach { it() } }
+            RemoteFilterListManager.scheduleAutoUpdate(appContext)
+        }
+    }
+
+    private fun runOnMainThread(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
     }
 
     /** Rebuilds the immutable engine after subscription or cache changes. */
