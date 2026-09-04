@@ -47,6 +47,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -66,28 +67,29 @@ android {
         buildConfig = true
     }
 
-    androidComponents {
-        onVariants { variant ->
-            val vNameStr = android.defaultConfig.versionName ?: "unknown"
-            val appNameStr = "AABrowser"
-            val isDebug = variant.buildType == "debug"
-            val debugSuffixStr = if (isDebug) "_debug" else ""
+}
 
-            val renameTaskProvider = tasks.register<RenameApkTask>("${variant.name}RenameApk") {
-                inputDir.set(variant.artifacts.get(SingleArtifact.APK))
-                outputDir.set(layout.buildDirectory.dir("renamedApks/${variant.name}"))
+androidComponents {
+    onVariants { variant ->
+        val vNameStr = android.defaultConfig.versionName ?: "unknown"
+        val appNameStr = "AABrowser"
+        val isDebug = variant.buildType == "debug"
+        val debugSuffixStr = if (isDebug) "_debug" else ""
 
-                appName.set(appNameStr)
-                versionNameProp.set(vNameStr)
-                debugSuffixProp.set(debugSuffixStr)
-            }
+        val renameTaskProvider = tasks.register<RenameApkTask>("${variant.name}RenameApk") {
+            inputDir.set(variant.artifacts.get(SingleArtifact.APK))
+            outputDir.set(layout.buildDirectory.dir("renamedApks/${variant.name}"))
 
-            afterEvaluate {
-                val assembleTaskName = "assemble${variant.name.replaceFirstChar { it.uppercase() }}"
-                if (tasks.findByName(assembleTaskName) != null) {
-                    tasks.named(assembleTaskName).configure {
-                        finalizedBy(renameTaskProvider)
-                    }
+            appName.set(appNameStr)
+            versionNameProp.set(vNameStr)
+            debugSuffixProp.set(debugSuffixStr)
+        }
+
+        afterEvaluate {
+            val assembleTaskName = "assemble${variant.name.replaceFirstChar { it.uppercase() }}"
+            if (tasks.findByName(assembleTaskName) != null) {
+                tasks.named(assembleTaskName).configure {
+                    finalizedBy(renameTaskProvider)
                 }
             }
         }
