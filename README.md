@@ -45,6 +45,9 @@ Transform your "parked time" with a sleek, modern browser designed specifically 
 - 🔎 **Global Display Scale:** Adjust the full UI and page-content scale together with presets or a custom percentage.
 - 🔄 **Smart Desktop Mode:** Seamlessly toggle between mobile and desktop rendering.
 - 📚 **Dashboard Bookmarks:** Quick access to your favorite sites without touching your phone.
+- 🛡️ **uBlock-Style Shields:** Filters ad and tracker requests and hides page elements using bundled static rules.
+
+Shields reads `app/src/main/assets/blocklist.txt`. The native WebView engine supports the common static-filter forms used by uBlock Origin lists: host/URL patterns, `@@` exceptions, wildcards and separators, third-party/resource/domain options, and CSS `##`/`#@#` rules. Scriptlets, redirect resources, and procedural cosmetic operators are intentionally not executed.
 
 
 ### 📸 Screenshots
@@ -86,7 +89,6 @@ If the app fails to launch, try opening a non-Google Maps navigation app (such a
 
 ## ⚠️ Current Issues
 
-- 🚫 **No Ad Blocking:** Ad filtering is not currently implemented (contributions welcome!).
 - 🚗 **Stationary Use Only**
 
 ---

@@ -113,7 +113,8 @@ fun configureWebView(
                 return AdBlocker.interceptOrNull(
                     requestUrl = request.url,
                     pageUrl = currentPageUrl.get(),
-                    isMainFrame = request.isForMainFrame
+                    isMainFrame = request.isForMainFrame,
+                    requestHeaders = request.requestHeaders
                 )
             }
 
@@ -160,6 +161,10 @@ fun configureWebView(
                 super.onPageFinished(view, url)
                 currentPageUrl.set(url)
                 view.evaluateJavascript(SpeechRecognitionBridge.POLYFILL_JS, null)
+                if (BrowserPreferences.isShieldsEnabled(appContext)) {
+                    AdBlocker.ensureLoaded(appContext)
+                    AdBlocker.cosmeticScript(url)?.let { view.evaluateJavascript(it, null) }
+                }
                 url?.let(callbacks.onUrlChange)
             }
 

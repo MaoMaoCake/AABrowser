@@ -1,6 +1,7 @@
-# AA Browser Shields - bundled ad & tracker domain list
-# One domain per line. Subdomains are matched automatically, so "doubleclick.net"
-# also covers "stats.g.doubleclick.net". Lines starting with # are ignored.
+! AA Browser Shields - bundled uBlock-style static filters
+! Supports || host anchors, @@ exceptions, wildcards, ^ separators, regular
+! expressions, third-party/resource/domain options, and ## cosmetic selectors.
+! Legacy domain-only entries are interpreted as ||domain^ for compatibility.
 #
 # Deliberately excluded so pages keep working:
 #   google.com, googleapis.com, gstatic.com, youtube.com, ytimg.com, cloudflare.com
@@ -247,3 +248,10 @@ anrdoezrs.net
 kqzyfj.com
 jdoqocy.com
 tkqlhce.com
+
+! --- Generic cosmetic filters ---
+##.adsbygoogle
+##[id^="google_ads_"]
+##[id^="div-gpt-ad-"]
+##[data-ad-slot]
+##.ad-banner

@@ -132,7 +132,7 @@
     <string name="settings_search_engine_duckduckgo">DuckDuckGo</string>
     <string name="settings_shields">Shields</string>
     <string name="settings_shields_title">Block ads and trackers</string>
-    <string name="settings_shields_description">Blocks known ad and tracker domains. Pages load faster and use less data.</string>
+    <string name="settings_shields_description">Uses uBlock-style network and cosmetic filters to block ads and trackers.</string>
     <string name="settings_shields_blocked_count">%1$d blocked this session</string>
     <string name="settings_shields_disabled">Blocking is off</string>
     <string name="settings_user_agent">User agent</string>

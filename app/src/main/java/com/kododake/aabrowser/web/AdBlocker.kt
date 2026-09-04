@@ -4,23 +4,15 @@ import android.content.Context
 import android.net.Uri
 import android.webkit.WebResourceResponse
 import java.io.ByteArrayInputStream
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Lightweight ad/tracker blocker in the spirit of Brave Shields.
- *
- * Requests are matched by host against a bundled domain list (assets/blocklist.txt).
- * Matching walks the parent domains, so a single "doubleclick.net" entry also covers
- * "stats.g.doubleclick.net". Main-frame navigations are never blocked, and requests
- * back to the page's own domain are treated as first party and left alone.
- */
+/** Android/WebView adapter around the uBlock-style [FilterEngine]. */
 object AdBlocker {
-
-    private const val BLOCKLIST_ASSET = "blocklist.txt"
-    private const val MIN_MATCHABLE_LABELS = 2
+    private const val FILTERS_ASSET = "blocklist.txt"
 
     @Volatile
-    private var blockedDomains: Set<String> = emptySet()
+    private var engine = FilterEngine.parse(emptySequence())
 
     @Volatile
     private var loaded = false
@@ -34,71 +26,75 @@ object AdBlocker {
         sessionBlockCount.set(0)
     }
 
-    /** Parses the bundled list once. Safe to call from any thread. */
+    /** Parses the bundled static filter list once. Safe to call from any thread. */
     fun ensureLoaded(context: Context) {
         if (loaded) return
         synchronized(this) {
             if (loaded) return
-            blockedDomains = runCatching { parseBlocklist(context) }.getOrDefault(emptySet())
+            engine = runCatching {
+                context.applicationContext.assets.open(FILTERS_ASSET).bufferedReader().use { reader ->
+                    FilterEngine.parse(reader.lineSequence())
+                }
+            }.getOrElse { FilterEngine.parse(emptySequence()) }
             loaded = true
         }
     }
 
-    private fun parseBlocklist(context: Context): Set<String> {
-        return context.applicationContext.assets.open(BLOCKLIST_ASSET).bufferedReader().useLines { lines ->
-            lines.map { it.substringBefore('#').trim().lowercase() }
-                .filter { it.isNotEmpty() }
-                .toSet()
-        }
-    }
-
-    fun isBlockedHost(host: String?): Boolean {
-        if (host.isNullOrBlank() || blockedDomains.isEmpty()) return false
-        val normalized = host.lowercase().removeSuffix(".")
-        if (normalized in blockedDomains) return true
-
-        var index = normalized.indexOf('.')
-        while (index in 0 until normalized.lastIndex) {
-            val parent = normalized.substring(index + 1)
-            if (parent.count { it == '.' } + 1 < MIN_MATCHABLE_LABELS) break
-            if (parent in blockedDomains) return true
-            index = normalized.indexOf('.', index + 1)
-        }
-        return false
-    }
-
-    /**
-     * Returns an empty response when [requestUrl] should be blocked, or null to let it through.
-     * [pageUrl] is the URL of the page making the request, used for the first-party exemption.
-     */
-    fun interceptOrNull(requestUrl: Uri?, pageUrl: String?, isMainFrame: Boolean): WebResourceResponse? {
+    fun interceptOrNull(
+        requestUrl: Uri?,
+        pageUrl: String?,
+        isMainFrame: Boolean,
+        requestHeaders: Map<String, String> = emptyMap()
+    ): WebResourceResponse? {
         if (isMainFrame || requestUrl == null) return null
-
-        val scheme = requestUrl.scheme?.lowercase()
+        val scheme = requestUrl.scheme?.lowercase(Locale.ROOT)
         if (scheme != "http" && scheme != "https") return null
-
-        val requestHost = requestUrl.host ?: return null
-        if (isFirstParty(requestHost, pageUrl)) return null
-        if (!isBlockedHost(requestHost)) return null
+        if (!engine.shouldBlock(FilterEngine.Request(
+                url = requestUrl.toString(),
+                pageUrl = pageUrl,
+                resourceType = inferResourceType(requestUrl, requestHeaders)
+            ))) return null
 
         sessionBlockCount.incrementAndGet()
-        return emptyResponse()
-    }
-
-    private fun isFirstParty(requestHost: String, pageUrl: String?): Boolean {
-        val pageHost = pageUrl?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { Uri.parse(it).host }.getOrNull() }
-            ?: return false
-        return registrableDomain(requestHost) == registrableDomain(pageHost)
-    }
-
-    private fun registrableDomain(host: String): String {
-        val labels = host.lowercase().removeSuffix(".").split('.')
-        if (labels.size <= MIN_MATCHABLE_LABELS) return labels.joinToString(".")
-        return labels.takeLast(MIN_MATCHABLE_LABELS).joinToString(".")
-    }
-
-    private fun emptyResponse(): WebResourceResponse {
         return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
     }
+
+    fun cosmeticScript(pageUrl: String?): String? {
+        val css = engine.cosmeticCss(pageUrl)
+        if (css.isBlank()) return null
+        val quotedCss = org.json.JSONObject.quote(css)
+        return """
+            (() => {
+              const id = '__aabrowser_cosmetic_filters';
+              let style = document.getElementById(id);
+              if (!style) {
+                style = document.createElement('style');
+                style.id = id;
+                (document.head || document.documentElement).appendChild(style);
+              }
+              style.textContent = $quotedCss;
+            })();
+        """.trimIndent()
+    }
+
+    private fun inferResourceType(uri: Uri, headers: Map<String, String>): FilterEngine.ResourceType {
+        val accept = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
+            ?.value.orEmpty().lowercase(Locale.ROOT)
+        val path = uri.path.orEmpty().lowercase(Locale.ROOT)
+        return when {
+            "text/css" in accept || path.endsWith(".css") -> FilterEngine.ResourceType.STYLESHEET
+            "image/" in accept || IMAGE_EXTENSIONS.any(path::endsWith) -> FilterEngine.ResourceType.IMAGE
+            "font/" in accept || FONT_EXTENSIONS.any(path::endsWith) -> FilterEngine.ResourceType.FONT
+            "audio/" in accept || "video/" in accept || MEDIA_EXTENSIONS.any(path::endsWith) -> FilterEngine.ResourceType.MEDIA
+            "javascript" in accept || SCRIPT_EXTENSIONS.any(path::endsWith) -> FilterEngine.ResourceType.SCRIPT
+            "application/json" in accept || "text/event-stream" in accept -> FilterEngine.ResourceType.XHR
+            "text/html" in accept -> FilterEngine.ResourceType.SUBDOCUMENT
+            else -> FilterEngine.ResourceType.OTHER
+        }
+    }
+
+    private val IMAGE_EXTENSIONS = setOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".ico")
+    private val FONT_EXTENSIONS = setOf(".woff", ".woff2", ".ttf", ".otf", ".eot")
+    private val MEDIA_EXTENSIONS = setOf(".mp3", ".mp4", ".webm", ".m3u8", ".ts", ".ogg", ".wav")
+    private val SCRIPT_EXTENSIONS = setOf(".js", ".mjs")
 }
