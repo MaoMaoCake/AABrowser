@@ -49,6 +49,8 @@ Transform your "parked time" with a sleek, modern browser designed specifically 
 
 Shields combines the offline rules in `app/src/main/assets/adblock/blocklist.txt` with remotely updated subscriptions. The default subscriptions follow uBlock Origin’s core lists plus EasyList and EasyPrivacy; custom HTTPS lists can be added, enabled, refreshed, or removed in Settings. Downloads are cached, conditionally refreshed every seven days, size-limited, and atomically replaced so the last working copy remains available offline. The native WebView engine supports host/URL patterns, `@@` exceptions, wildcards and separators, third-party/resource/domain options, and CSS `##`/`#@#` rules.
 
+The uBO scriptlet compatibility suite runs automatically with Gradle unit tests. It checks the generated runtime against every canonical scriptlet and alias in the pinned upstream registry, enforces trusted-scriptlet behavior, and exercises representative `set`, `json-prune`, trusted fetch replacement, and upstream `nostif` cases. Run it directly with `node scripts/test_ubo_scriptlet_compatibility.cjs`.
+
 Domain-scoped `##+js(...)` rules execute through a document-start bundle generated from uBlock Origin’s complete upstream scriptlet registry. Aliases, arguments, exceptions, dependencies, and `requiresTrust` metadata are preserved. Only bundled rules and official uBlock subscriptions may invoke trusted scriptlets; EasyList and custom subscriptions remain untrusted. The pinned upstream sources and regeneration instructions live in `third_party/ublock`.
 
 

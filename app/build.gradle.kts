@@ -100,6 +100,28 @@ tasks.withType<KotlinJvmCompile>().configureEach {
     }
 }
 
+val testUboScriptletCompatibility by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Checks the generated scriptlet runtime against the pinned upstream uBO registry and behavior."
+    workingDir(rootProject.projectDir)
+    val nodeBinary = providers.environmentVariable("NODE_BINARY").orNull
+        ?: System.getenv("PATH").orEmpty().split(File.pathSeparatorChar)
+            .asSequence()
+            .map { File(it, if (System.getProperty("os.name").startsWith("Windows")) "node.exe" else "node") }
+            .firstOrNull { it.isFile && it.canExecute() }
+            ?.absolutePath
+        ?: throw GradleException("Node.js is required for the uBO scriptlet compatibility suite; set NODE_BINARY")
+    commandLine(nodeBinary, "scripts/test_ubo_scriptlet_compatibility.cjs")
+    inputs.file(rootProject.file("scripts/test_ubo_scriptlet_compatibility.cjs"))
+    inputs.file(rootProject.file("app/src/main/assets/adblock/ubo-scriptlets.js"))
+    inputs.dir(rootProject.file("third_party/ublock/src/js/resources"))
+    inputs.file(rootProject.file("third_party/ublock/README.md"))
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(testUboScriptletCompatibility)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
