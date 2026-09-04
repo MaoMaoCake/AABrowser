@@ -31,13 +31,30 @@ object AdBlocker {
         if (loaded) return
         synchronized(this) {
             if (loaded) return
-            engine = runCatching {
-                context.applicationContext.assets.open(FILTERS_ASSET).bufferedReader().use { reader ->
-                    FilterEngine.parse(reader.lineSequence())
-                }
-            }.getOrElse { FilterEngine.parse(emptySequence()) }
+            engine = loadEngine(context.applicationContext)
             loaded = true
         }
+        RemoteFilterListManager.scheduleAutoUpdate(context.applicationContext)
+    }
+
+    /** Rebuilds the immutable engine after subscription or cache changes. */
+    fun reload(context: Context) {
+        val replacement = loadEngine(context.applicationContext)
+        synchronized(this) {
+            engine = replacement
+            loaded = true
+        }
+    }
+
+    private fun loadEngine(context: Context): FilterEngine = runCatching {
+        FilterEngine.parse(sequence {
+            context.assets.open(FILTERS_ASSET).bufferedReader().use { reader ->
+                while (true) yield(reader.readLine() ?: break)
+            }
+            yieldAll(RemoteFilterListManager.cachedFilterLines(context))
+        })
+    }.getOrElse {
+        FilterEngine.parse(context.assets.open(FILTERS_ASSET).bufferedReader().use { it.readLines().asSequence() })
     }
 
     fun interceptOrNull(

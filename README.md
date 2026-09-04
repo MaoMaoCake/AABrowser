@@ -47,7 +47,7 @@ Transform your "parked time" with a sleek, modern browser designed specifically 
 - 📚 **Dashboard Bookmarks:** Quick access to your favorite sites without touching your phone.
 - 🛡️ **uBlock-Style Shields:** Filters ad and tracker requests and hides page elements using bundled static rules.
 
-Shields reads `app/src/main/assets/blocklist.txt`. The native WebView engine supports the common static-filter forms used by uBlock Origin lists: host/URL patterns, `@@` exceptions, wildcards and separators, third-party/resource/domain options, and CSS `##`/`#@#` rules. Scriptlets, redirect resources, and procedural cosmetic operators are intentionally not executed.
+Shields combines the offline rules in `app/src/main/assets/blocklist.txt` with remotely updated subscriptions. The default subscriptions follow uBlock Origin’s core lists plus EasyList and EasyPrivacy; custom HTTPS lists can be added, enabled, refreshed, or removed in Settings. Downloads are cached, conditionally refreshed every seven days, size-limited, and atomically replaced so the last working copy remains available offline. The native WebView engine supports host/URL patterns, `@@` exceptions, wildcards and separators, third-party/resource/domain options, and CSS `##`/`#@#` rules. Scriptlets, redirect resources, and procedural cosmetic operators are intentionally not executed.
 
 
 ### 📸 Screenshots

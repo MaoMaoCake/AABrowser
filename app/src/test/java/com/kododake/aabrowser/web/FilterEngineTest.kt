@@ -66,6 +66,36 @@ class FilterEngineTest {
         assertFalse(".newsletter" in shopCss)
     }
 
+    @Test
+    fun `hosts file entries are accepted`() {
+        val engine = engine("0.0.0.0 metrics.example.test # tracker")
+        assertTrue(engine.blocks("https://metrics.example.test/collect"))
+    }
+
+    @Test
+    fun `unsupported action modifiers never become broad blocking rules`() {
+        val engine = engine(
+            "*${'$'}removeparam=utm_source",
+            "||cdn.example.test^${'$'}redirect=noopjs",
+            "||known.example.test^"
+        )
+        assertFalse(engine.blocks("https://unrelated.test/page.js"))
+        assertFalse(engine.blocks("https://cdn.example.test/app.js"))
+        assertTrue(engine.blocks("https://known.example.test/app.js"))
+    }
+
+    @Test
+    fun `badfilter disables its matching network rule`() {
+        val engine = engine(
+            "||disabled.example.test^${'$'}script",
+            "||disabled.example.test^${'$'}script,badfilter"
+        )
+        assertFalse(engine.blocks(
+            "https://disabled.example.test/app.js",
+            type = FilterEngine.ResourceType.SCRIPT
+        ))
+    }
+
     private fun engine(vararg rules: String) = FilterEngine.parse(rules.asSequence())
 
     private fun FilterEngine.blocks(
