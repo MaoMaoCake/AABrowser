@@ -254,7 +254,7 @@ class TabManager(
         } else {
             callbacks.onHideStartPage()
             if (selectedTab.webView.url.isNullOrBlank()) {
-                selectedTab.webView.loadUrlWhenShieldsReady(selectedTab.currentUrl)
+                selectedTab.webView.loadUrlWhenShieldsReady(selectedTab.currentUrl, ::showShieldsLoading)
             } else {
                 binding.pageTitle.text = selectedTab.currentTitle.ifBlank { displayTitleForTab(selectedTab) }
                 callbacks.updateConnectionSecurityIcon(selectedTab.currentUrl)
@@ -266,6 +266,11 @@ class TabManager(
         callbacks.updateNavigationButtons()
         callbacks.applyPersistentAddressBarPreference()
         callbacks.onTabChanged(selectedTab)
+    }
+
+    private fun showShieldsLoading(waiting: Boolean) {
+        binding.progressIndicator.isIndeterminate = waiting
+        binding.progressIndicator.visibility = if (waiting) View.VISIBLE else View.GONE
     }
 
     fun closeTab(tabId: Long, onSpeechTabClosed: () -> Unit) {

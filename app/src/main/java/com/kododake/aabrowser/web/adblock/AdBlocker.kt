@@ -21,6 +21,9 @@ object AdBlocker {
     @Volatile
     private var loaded = false
 
+    val isLoaded: Boolean
+        get() = loaded
+
     private var loading = false
     private val readyCallbacks = ArrayList<() -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())

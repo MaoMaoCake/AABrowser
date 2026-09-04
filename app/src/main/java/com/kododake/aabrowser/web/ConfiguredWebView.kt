@@ -326,14 +326,19 @@ fun configureWebView(
 }
 
 /** Loads only after Shields has its complete filter engine, without blocking the UI thread. */
-fun WebView.loadUrlWhenShieldsReady(url: String) {
+fun WebView.loadUrlWhenShieldsReady(
+    url: String,
+    onWaitingForShields: (Boolean) -> Unit = {}
+) {
     if (!BrowserPreferences.isShieldsEnabled(context)) {
         loadUrl(url)
         return
     }
     val target = this
+    if (!AdBlocker.isLoaded) onWaitingForShields(true)
     target.setTag(R.id.webview_pending_shields_url_tag, url)
     AdBlocker.runWhenLoaded(context.applicationContext) {
+        onWaitingForShields(false)
         // Closed tabs are removed from their parent and destroyed while filters load.
         if (target.parent != null && target.getTag(R.id.webview_pending_shields_url_tag) == url) {
             target.setTag(R.id.webview_pending_shields_url_tag, null)

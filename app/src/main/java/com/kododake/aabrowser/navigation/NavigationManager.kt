@@ -111,7 +111,7 @@ class NavigationManager(
                     finishNavigation {
                         targetWebView.setTag(R.id.webview_allow_once_uri_tag, navigable)
                         targetWebView.post { 
-                            targetWebView.loadUrlWhenShieldsReady(navigable)
+                            targetWebView.loadUrlWhenShieldsReady(navigable, ::showShieldsLoading)
                         }
                     }
                 },
@@ -122,7 +122,7 @@ class NavigationManager(
                     finishNavigation {
                         targetWebView.setTag(R.id.webview_allow_once_uri_tag, navigable)
                         targetWebView.post { 
-                            targetWebView.loadUrlWhenShieldsReady(navigable)
+                            targetWebView.loadUrlWhenShieldsReady(navigable, ::showShieldsLoading)
                         }
                     }
                 },
@@ -136,7 +136,12 @@ class NavigationManager(
         }
 
         finishNavigation { 
-            targetWebView.loadUrlWhenShieldsReady(navigable)
+            targetWebView.loadUrlWhenShieldsReady(navigable, ::showShieldsLoading)
         }
+    }
+
+    private fun showShieldsLoading(waiting: Boolean) {
+        binding.progressIndicator.isIndeterminate = waiting
+        binding.progressIndicator.isVisible = waiting
     }
 }

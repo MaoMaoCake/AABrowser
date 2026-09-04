@@ -89,8 +89,13 @@ class FilterEngine private constructor(
     }
 
     companion object {
-        private val DOMAIN_ONLY = Regex("^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
         private val URL_TOKENS = Regex("[a-z0-9%]{4,}")
+        private val HOSTS_ENTRY = Regex("^(?:0\\.0\\.0\\.0|127\\.0\\.0\\.1|::1)\\s+([^\\s#]+)")
+        private val HOST_ANCHORED_ONLY = Regex("^\\|\\|([a-zA-Z0-9.-]+)\\^$")
+        private val UNSUPPORTED_COSMETIC_OPERATORS = arrayOf(
+            ":has-text(", ":matches-css(", ":matches-attr(", ":remove(",
+            ":style(", ":upward(", ":xpath(", ":others(", ":watch-attr("
+        )
         private val UNHELPFUL_TOKENS = setOf("http", "https", "html", "com", "org", "net")
         private val TYPE_OPTIONS = mapOf(
             "script" to ResourceType.SCRIPT, "image" to ResourceType.IMAGE,
@@ -237,12 +242,8 @@ class FilterEngine private constructor(
             val marker = when { "#@#" in line -> "#@#"; "##" in line -> "##"; else -> return null }
             val split = line.indexOf(marker)
             val selector = line.substring(split + marker.length).trim()
-            val unsupportedOperators = listOf(
-                ":has-text(", ":matches-css(", ":matches-attr(", ":remove(",
-                ":style(", ":upward(", ":xpath(", ":others(", ":watch-attr("
-            )
             if (selector.isEmpty() || selector.startsWith("+") || selector.startsWith("^") ||
-                unsupportedOperators.any(selector::contains)) return null
+                UNSUPPORTED_COSMETIC_OPERATORS.any(selector::contains)) return null
             val domains = line.substring(0, split).split(',').map(String::trim).filter(String::isNotEmpty)
             val included = domains.filterNot { it.startsWith("~") }.map(::normalizeHost).toSet()
             val excluded = domains.filter { it.startsWith("~") }.map { normalizeHost(it.drop(1)) }.toSet()
@@ -251,7 +252,7 @@ class FilterEngine private constructor(
 
         private fun parseNetwork(source: String): NetworkRule? {
             var line = source
-            val hostsEntry = Regex("^(?:0\\.0\\.0\\.0|127\\.0\\.0\\.1|::1)\\s+([^\\s#]+)").find(line)
+            val hostsEntry = HOSTS_ENTRY.find(line)
             if (hostsEntry != null) line = hostsEntry.groupValues[1]
             val exception = line.startsWith("@@")
             if (exception) line = line.drop(2)
@@ -316,10 +317,10 @@ class FilterEngine private constructor(
                 return runCatching { RegexPattern(Regex(text.drop(1).dropLast(1), flags)) }.getOrNull()
             }
             val normalized = text.lowercase(Locale.ROOT)
-            if (DOMAIN_ONLY.matches(normalized)) {
+            if (isDomainOnly(normalized)) {
                 return HostPattern(normalizeHost(normalized))
             }
-            val hostOnly = Regex("^\\|\\|([a-zA-Z0-9.-]+)\\^$").matchEntire(text)
+            val hostOnly = HOST_ANCHORED_ONLY.matchEntire(text)
             if (hostOnly != null) {
                 return HostPattern(normalizeHost(hostOnly.groupValues[1]))
             }
@@ -335,11 +336,28 @@ class FilterEngine private constructor(
                 when (char) {
                     '*' -> regex.append(".*")
                     '^' -> regex.append("(?:[^A-Za-z0-9_.%-]|$)")
-                    else -> regex.append(Regex.escape(char.toString()))
+                    else -> appendRegexLiteral(regex, char)
                 }
             }
             if (endAnchored) regex.append('$')
             return runCatching { RegexPattern(Regex(regex.toString(), flags)) }.getOrNull()
+        }
+
+        private fun isDomainOnly(value: String): Boolean {
+            if (value.isEmpty() || !value.first().isAsciiLetterOrDigit() ||
+                !value.last().isAsciiLetterOrDigit()) return false
+            return value.all { it.isAsciiLetterOrDigit() || it == '.' || it == '-' }
+        }
+
+        private fun Char.isAsciiLetterOrDigit(): Boolean = this in 'a'..'z' || this in '0'..'9'
+
+        private fun appendRegexLiteral(output: StringBuilder, char: Char) {
+            if (char == '\\' || char == '.' || char == '[' || char == ']' || char == '{' ||
+                char == '}' || char == '(' || char == ')' || char == '+' || char == '?' ||
+                char == '$' || char == '|') {
+                output.append('\\')
+            }
+            output.append(char)
         }
 
         internal fun hostOf(url: String?): String? = runCatching { url?.let(::URI)?.host?.let(::normalizeHost) }.getOrNull()
