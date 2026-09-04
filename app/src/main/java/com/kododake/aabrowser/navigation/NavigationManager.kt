@@ -143,5 +143,6 @@ class NavigationManager(
     private fun showShieldsLoading(waiting: Boolean) {
         binding.progressIndicator.isIndeterminate = waiting
         binding.progressIndicator.isVisible = waiting
+        binding.loadingRulesLabel.isVisible = waiting
     }
 }

@@ -136,6 +136,7 @@
     <string name="settings_shields_blocked_count">%1$d blocked this session</string>
     <string name="settings_shields_disabled">Blocking is off</string>
     <string name="settings_filter_lists_summary">%1$d of %2$d remote lists enabled · %3$d cached rules</string>
+    <string name="loading_adblock_rules">Loading rules…</string>
     <string name="settings_filter_lists_manage">Manage filter lists</string>
     <string name="settings_filter_lists_manage_description">Choose built-in subscriptions or manage custom lists</string>
     <string name="settings_filter_lists_add">Add custom list</string>

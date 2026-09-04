@@ -271,6 +271,7 @@ class TabManager(
     private fun showShieldsLoading(waiting: Boolean) {
         binding.progressIndicator.isIndeterminate = waiting
         binding.progressIndicator.visibility = if (waiting) View.VISIBLE else View.GONE
+        binding.loadingRulesLabel.visibility = if (waiting) View.VISIBLE else View.GONE
     }
 
     fun closeTab(tabId: Long, onSpeechTabClosed: () -> Unit) {
