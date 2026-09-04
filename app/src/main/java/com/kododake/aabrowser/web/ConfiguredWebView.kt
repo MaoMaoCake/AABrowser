@@ -21,7 +21,6 @@ import android.webkit.WebViewClient
 import androidx.core.net.toUri
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.kododake.aabrowser.R
 import com.kododake.aabrowser.data.BrowserPreferences
@@ -94,7 +93,9 @@ fun configureWebView(
 
         applyPageDarkening(allowDarkPages)
         applyBrowserIdentity(userAgentProfile, useDesktopMode)
-        installYouTubeAdMitigation(BrowserPreferences.isShieldsEnabled(appContext))
+        // Scriptlet selection must be ready before the first document-start callback.
+        if (BrowserPreferences.isShieldsEnabled(appContext)) AdBlocker.ensureLoaded(appContext)
+        UboScriptletRuntime.install(this, BrowserPreferences.isShieldsEnabled(appContext))
 
         CookieManager.getInstance().also {
             it.setAcceptCookie(true)
@@ -142,10 +143,8 @@ fun configureWebView(
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 currentPageUrl.set(url)
-                if (BrowserPreferences.isShieldsEnabled(appContext) &&
-                    !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
-                    YouTubeAdMitigation.appliesTo(url)) {
-                    view.evaluateJavascript(YouTubeAdMitigation.script, null)
+                if (BrowserPreferences.isShieldsEnabled(appContext)) {
+                    UboScriptletRuntime.runFallbackIfNeeded(view)
                 }
                 val stringUrl = url
                 if (stringUrl == null) {
@@ -386,33 +385,13 @@ fun WebView.updatePageDarkening(enabled: Boolean) {
 }
 
 fun WebView.updateShieldsEnabled(enabled: Boolean) {
-    installYouTubeAdMitigation(enabled)
+    UboScriptletRuntime.install(this, enabled)
     reload()
-}
-
-private fun WebView.installYouTubeAdMitigation(enabled: Boolean) {
-    runCatching {
-        (getTag(R.id.webview_youtube_script_handler_tag) as? androidx.webkit.ScriptHandler)?.remove()
-    }
-    setTag(R.id.webview_youtube_script_handler_tag, null)
-    if (!enabled || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-    runCatching {
-        WebViewCompat.addDocumentStartJavaScript(
-            this,
-            YouTubeAdMitigation.script,
-            YouTubeAdMitigation.allowedOrigins
-        )
-    }.getOrNull()?.let { handler ->
-        setTag(R.id.webview_youtube_script_handler_tag, handler)
-    }
 }
 
 fun WebView.releaseCompletely() {
     stopLoading()
-    runCatching {
-        (getTag(R.id.webview_youtube_script_handler_tag) as? androidx.webkit.ScriptHandler)?.remove()
-    }
-    setTag(R.id.webview_youtube_script_handler_tag, null)
+    UboScriptletRuntime.uninstall(this)
     (parent as? android.view.ViewGroup)?.removeView(this)
     removeAllViews()
     webChromeClient = null

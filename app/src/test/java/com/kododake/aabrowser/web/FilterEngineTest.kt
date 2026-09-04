@@ -96,6 +96,68 @@ class FilterEngineTest {
         ))
     }
 
+    @Test
+    fun `scriptlet rules parse quoted arguments and domain exceptions`() {
+        val engine = FilterEngine.parseSources(sequenceOf(
+            FilterEngine.SourceLine("video.test##+js(set, 'player.ads', `undefined`)", trusted = true),
+            FilterEngine.SourceLine("allowed.video.test#@#+js(set, player.ads, undefined)", trusted = true)
+        ))
+        val invocation = engine.scriptletsFor("https://video.test/watch").single()
+        assertTrue(invocation.trusted)
+        assertTrue(invocation.name == "set-constant")
+        assertTrue(invocation.arguments == listOf("player.ads", "undefined"))
+        assertTrue(engine.scriptletsFor("https://allowed.video.test/watch").isEmpty())
+    }
+
+    @Test
+    fun `global scriptlet exception disables injection`() {
+        val engine = engine(
+            "video.test##+js(noeval-if, ads)",
+            "video.test#@#+js()"
+        )
+        assertTrue(engine.scriptletsFor("https://video.test").isEmpty())
+    }
+
+    @Test
+    fun `malformed scriptlet arguments are rejected`() {
+        val engine = engine("video.test##+js(set, 'unterminated)")
+        assertTrue(engine.scriptletsFor("https://video.test").isEmpty())
+    }
+
+    @Test
+    fun `scriptlet argument escaping matches ubo separators`() {
+        val args = FilterEngine.parseScriptletArguments("trusted-replace, /ad\\.js/, one\\,two")
+        assertTrue(args == listOf("trusted-replace", "/ad\\.js/", "one,two"))
+    }
+
+    @Test
+    fun `entity scriptlet domains match registrable sites`() {
+        val engine = engine("example.*##+js(set, ads, false)")
+        assertTrue(engine.scriptletsFor("https://www.example.co.uk/page").isNotEmpty())
+        assertTrue(engine.scriptletsFor("https://example.com/page").isNotEmpty())
+        assertTrue(engine.scriptletsFor("https://example.evil.com/page").isEmpty())
+    }
+
+    @Test
+    fun `scriptlet aliases are canonicalized for exceptions`() {
+        val engine = engine(
+            "video.test##+js(set, player.ads, false)",
+            "video.test#@#+js(set-constant, player.ads, false)"
+        )
+        assertTrue(engine.scriptletsFor("https://video.test").isEmpty())
+    }
+
+    @Test
+    fun `trusted duplicate wins without allowing custom lists to escalate`() {
+        val engine = FilterEngine.parseSources(sequenceOf(
+            FilterEngine.SourceLine("video.test##+js(trusted-set, player.ads, undefined)", trusted = false),
+            FilterEngine.SourceLine("video.test##+js(trusted-set-constant, player.ads, undefined)", trusted = true)
+        ))
+        val invocation = engine.scriptletsFor("https://video.test").single()
+        assertTrue(invocation.trusted)
+        assertTrue(invocation.name == "trusted-set-constant")
+    }
+
     private fun engine(vararg rules: String) = FilterEngine.parse(rules.asSequence())
 
     private fun FilterEngine.blocks(

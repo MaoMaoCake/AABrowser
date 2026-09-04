@@ -6,7 +6,8 @@ import java.util.Locale
 /** Immutable parser/matcher for the commonly used subset of uBlock static filters. */
 class FilterEngine private constructor(
     private val networkRules: List<NetworkRule>,
-    private val cosmeticRules: List<CosmeticRule>
+    private val cosmeticRules: List<CosmeticRule>,
+    private val scriptletRules: List<ScriptletRule>
 ) {
     private val indexedBlockingRules = networkRules.filterNot(NetworkRule::exception)
         .filter { it.token != null }.groupBy { it.token!! }
@@ -21,6 +22,14 @@ class FilterEngine private constructor(
         val url: String,
         val pageUrl: String?,
         val resourceType: ResourceType = ResourceType.OTHER
+    )
+
+    data class SourceLine(val text: String, val trusted: Boolean = false)
+
+    data class ScriptletInvocation(
+        val name: String,
+        val arguments: List<String>,
+        val trusted: Boolean
     )
 
     fun shouldBlock(request: Request): Boolean {
@@ -49,7 +58,24 @@ class FilterEngine private constructor(
         return hidden.joinToString(",\n") { "$it { display: none !important; }" }
     }
 
-    val ruleCount: Int get() = networkRules.size + cosmeticRules.size
+    fun scriptletsFor(pageUrl: String?): List<ScriptletInvocation> {
+        val host = hostOf(pageUrl) ?: return emptyList()
+        val exceptions = scriptletRules.filter { it.exception && it.appliesTo(host) }
+        if (exceptions.any { it.arguments.isEmpty() }) return emptyList()
+        val excepted = exceptions.mapTo(HashSet()) { it.key }
+        val selected = LinkedHashMap<Pair<String, List<String>>, ScriptletInvocation>()
+        scriptletRules.asSequence()
+            .filter { !it.exception && it.appliesTo(host) && it.key !in excepted }
+            .forEach { rule ->
+                val existing = selected[rule.key]
+                if (existing == null || (!existing.trusted && rule.trusted)) {
+                    selected[rule.key] = ScriptletInvocation(rule.name, rule.arguments, rule.trusted)
+                }
+            }
+        return selected.values.toList()
+    }
+
+    val ruleCount: Int get() = networkRules.size + cosmeticRules.size + scriptletRules.size
 
     private fun candidates(
         url: String,
@@ -76,13 +102,18 @@ class FilterEngine private constructor(
             "object" to ResourceType.MEDIA
         )
 
-        fun parse(lines: Sequence<String>): FilterEngine {
+        fun parse(lines: Sequence<String>): FilterEngine =
+            parseSources(lines.map { SourceLine(it) })
+
+        fun parseSources(lines: Sequence<SourceLine>): FilterEngine {
             val network = ArrayList<NetworkRule>()
             val cosmetic = ArrayList<CosmeticRule>()
+            val scriptlets = ArrayList<ScriptletRule>()
             val disabledNetworkRules = HashSet<String>()
-            lines.forEach { rawLine ->
-                val line = rawLine.trim()
+            lines.forEach { sourceLine ->
+                val line = sourceLine.text.trim()
                 if (line.isEmpty() || line.startsWith("!") || line.startsWith("[") || line.startsWith("# ")) return@forEach
+                parseScriptlet(line, sourceLine.trusted)?.let { scriptlets += it; return@forEach }
                 parseCosmetic(line)?.let { cosmetic += it; return@forEach }
                 badFilterTarget(line)?.let { target ->
                     disabledNetworkRules += target
@@ -91,8 +122,102 @@ class FilterEngine private constructor(
                 }
                 if (line !in disabledNetworkRules) parseNetwork(line)?.let(network::add)
             }
-            return FilterEngine(network, cosmetic)
+            return FilterEngine(network, cosmetic, scriptlets)
         }
+
+        private fun parseScriptlet(line: String, trusted: Boolean): ScriptletRule? {
+            val marker = when {
+                "#@#+js(" in line -> "#@#+js("
+                "##+js(" in line -> "##+js("
+                else -> return null
+            }
+            if (!line.endsWith(')')) return null
+            val split = line.indexOf(marker)
+            val arguments = parseScriptletArguments(line.substring(split + marker.length, line.length - 1))
+                ?: return null
+            if (arguments.isEmpty() && marker == "##+js(") return null
+            val domains = line.substring(0, split).split(',').map(String::trim).filter(String::isNotEmpty)
+            val included = domains.filterNot { it.startsWith("~") }.map(::normalizeHost).toSet()
+            val excluded = domains.filter { it.startsWith("~") }.map { normalizeHost(it.drop(1)) }.toSet()
+            if (included.isEmpty() && marker == "##+js(") return null
+            return ScriptletRule(
+                name = canonicalScriptletName(arguments.firstOrNull().orEmpty()),
+                arguments = arguments.drop(1),
+                exception = marker == "#@#+js(",
+                includedDomains = included,
+                excludedDomains = excluded,
+                trusted = trusted
+            )
+        }
+
+        internal fun parseScriptletArguments(source: String): List<String>? {
+            if (source.isBlank()) return emptyList()
+            val output = ArrayList<String>()
+            val current = StringBuilder()
+            var quote: Char? = null
+            var atArgumentStart = true
+            var index = 0
+            while (index < source.length) {
+                val char = source[index]
+                val next = source.getOrNull(index + 1)
+                if (char == '\\' && ((quote != null && next == quote) || (quote == null && next == ','))) {
+                    current.append(next)
+                    index += 2
+                    continue
+                }
+                if (quote != null) {
+                    if (char == quote) quote = null else current.append(char)
+                } else if (atArgumentStart && char.isWhitespace()) {
+                    // uBO ignores whitespace before the optional opening quote.
+                } else if (atArgumentStart && char in charArrayOf('\'', '"', '`')) {
+                    quote = char
+                    atArgumentStart = false
+                } else if (char == ',') {
+                    output += current.toString().trim()
+                    current.clear()
+                    atArgumentStart = true
+                } else {
+                    current.append(char)
+                    atArgumentStart = false
+                }
+                index++
+            }
+            if (quote != null) return null
+            output += current.toString().trim()
+            return output
+        }
+
+        private fun canonicalScriptletName(rawName: String): String {
+            val name = rawName.removeSuffix(".js")
+            return SCRIPTLET_ALIASES[name] ?: name
+        }
+
+        private val SCRIPTLET_ALIASES = mapOf(
+            "abort-current-inline-script" to "abort-current-script",
+            "acis" to "abort-current-script", "acs" to "abort-current-script",
+            "ra" to "remove-attr", "urlskip" to "href-sanitizer",
+            "aost" to "abort-on-stack-trace", "prevent-eval-if" to "noeval-if",
+            "addEventListener-defuser" to "prevent-addEventListener",
+            "aeld" to "prevent-addEventListener", "bab-defuser" to "prevent-bab",
+            "nobab" to "prevent-bab", "no-fetch-if" to "prevent-fetch",
+            "no-setTimeout-if" to "prevent-setTimeout", "nostif" to "prevent-setTimeout",
+            "setTimeout-defuser" to "prevent-setTimeout",
+            "no-setInterval-if" to "prevent-setInterval", "nosiif" to "prevent-setInterval",
+            "setInterval-defuser" to "prevent-setInterval",
+            "no-requestAnimationFrame-if" to "prevent-requestAnimationFrame",
+            "norafif" to "prevent-requestAnimationFrame", "set" to "set-constant",
+            "trusted-set" to "trusted-set-constant", "no-xhr-if" to "prevent-xhr",
+            "cookie-remover" to "remove-cookie", "aopr" to "abort-on-property-read",
+            "aopw" to "abort-on-property-write",
+            "nano-setInterval-booster" to "adjust-setInterval", "nano-sib" to "adjust-setInterval",
+            "nano-setTimeout-booster" to "adjust-setTimeout", "nano-stb" to "adjust-setTimeout",
+            "refresh-defuser" to "prevent-refresh", "rc" to "remove-class",
+            "nowoif" to "prevent-window-open", "no-window-open-if" to "prevent-window-open",
+            "window.open-defuser" to "prevent-window-open", "window-close-if" to "close-window",
+            "rmnt" to "remove-node-text", "trusted-rpnt" to "trusted-replace-node-text",
+            "replace-node-text" to "trusted-replace-node-text", "rpnt" to "trusted-replace-node-text",
+            "trusted-rpfr" to "trusted-replace-fetch-response"
+        )
 
         private fun badFilterTarget(line: String): String? {
             val split = optionSeparator(line)
@@ -219,7 +344,15 @@ class FilterEngine private constructor(
 
         internal fun hostOf(url: String?): String? = runCatching { url?.let(::URI)?.host?.let(::normalizeHost) }.getOrNull()
         private fun normalizeHost(host: String) = host.trim().trimEnd('.').lowercase(Locale.ROOT)
-        private fun hostMatches(host: String, domain: String) = host == domain || host.endsWith(".$domain")
+        private fun hostMatches(host: String, domain: String): Boolean {
+            if (domain.startsWith('/') && domain.endsWith('/') && domain.length > 2) {
+                return runCatching { Regex(domain.drop(1).dropLast(1)).containsMatchIn(host) }.getOrDefault(false)
+            }
+            if (domain.endsWith(".*")) {
+                return siteKey(host).substringBefore('.') == domain.dropLast(2).substringAfterLast('.')
+            }
+            return host == domain || host.endsWith(".$domain")
+        }
         private val COMMON_SECOND_LEVEL_SUFFIXES = setOf("co.uk", "org.uk", "com.au", "net.au", "co.jp", "co.nz", "com.br", "com.cn", "com.sg", "co.in")
         private fun siteKey(host: String): String {
             val labels = normalizeHost(host).split('.')
@@ -268,6 +401,22 @@ class FilterEngine private constructor(
         val selector: String, val exception: Boolean,
         val includedDomains: Set<String>, val excludedDomains: Set<String>
     ) {
+        fun appliesTo(host: String): Boolean {
+            if (excludedDomains.any { hostMatches(host, it) }) return false
+            return includedDomains.isEmpty() || includedDomains.any { hostMatches(host, it) }
+        }
+    }
+
+    private data class ScriptletRule(
+        val name: String,
+        val arguments: List<String>,
+        val exception: Boolean,
+        val includedDomains: Set<String>,
+        val excludedDomains: Set<String>,
+        val trusted: Boolean
+    ) {
+        val key: Pair<String, List<String>> get() = name to arguments
+
         fun appliesTo(host: String): Boolean {
             if (excludedDomains.any { hostMatches(host, it) }) return false
             return includedDomains.isEmpty() || includedDomains.any { hostMatches(host, it) }

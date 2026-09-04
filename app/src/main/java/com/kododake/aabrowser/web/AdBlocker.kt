@@ -47,15 +47,20 @@ object AdBlocker {
     }
 
     private fun loadEngine(context: Context): FilterEngine = runCatching {
-        FilterEngine.parse(sequence {
+        FilterEngine.parseSources(sequence {
             context.assets.open(FILTERS_ASSET).bufferedReader().use { reader ->
-                while (true) yield(reader.readLine() ?: break)
+                while (true) yield(FilterEngine.SourceLine(reader.readLine() ?: break, trusted = true))
             }
             yieldAll(RemoteFilterListManager.cachedFilterLines(context))
         })
     }.getOrElse {
-        FilterEngine.parse(context.assets.open(FILTERS_ASSET).bufferedReader().use { it.readLines().asSequence() })
+        FilterEngine.parseSources(context.assets.open(FILTERS_ASSET).bufferedReader().use { reader ->
+            reader.readLines().asSequence().map { FilterEngine.SourceLine(it, trusted = true) }
+        })
     }
+
+    fun scriptletInvocations(pageUrl: String?): List<FilterEngine.ScriptletInvocation> =
+        engine.scriptletsFor(pageUrl)
 
     fun interceptOrNull(
         requestUrl: Uri?,

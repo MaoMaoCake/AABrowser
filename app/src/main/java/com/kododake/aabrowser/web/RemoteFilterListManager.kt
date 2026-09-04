@@ -35,6 +35,9 @@ object RemoteFilterListManager {
     private const val KEY_SUBSCRIPTIONS = "subscriptions"
     private const val UPDATE_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
     private const val MAX_LIST_BYTES = 16L * 1024 * 1024
+    private val TRUSTED_LIST_IDS = setOf(
+        "ublock-filters", "ublock-privacy", "ublock-unbreak", "ublock-quick-fixes"
+    )
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val client = OkHttpClient.Builder()
@@ -113,11 +116,14 @@ object RemoteFilterListManager {
         }
     }
 
-    fun cachedFilterLines(context: Context): Sequence<String> = sequence {
+    fun cachedFilterLines(context: Context): Sequence<FilterEngine.SourceLine> = sequence {
         subscriptions(context).filter(Subscription::enabled).forEach { subscription ->
             val file = cacheFile(context, subscription)
             if (file.isFile) file.bufferedReader().use { reader ->
-                while (true) yield(reader.readLine() ?: break)
+                while (true) yield(FilterEngine.SourceLine(
+                    reader.readLine() ?: break,
+                    trusted = subscription.builtIn && subscription.id in TRUSTED_LIST_IDS
+                ))
             }
         }
     }

@@ -256,10 +256,18 @@ tkqlhce.com
 ##[data-ad-slot]
 ##.ad-banner
 
-! --- YouTube ad endpoints (video ads need the document-start mitigation too) ---
+! --- YouTube network and scriptlet filters ---
 ||youtube.com/api/stats/ads^
 ||youtube.com/pagead/^
 ||youtube.com/ptracking^
 ||youtube.com/get_midroll_info^
 *_ad_$media,domain=youtube.com,third-party
 ||googlevideo.com/initplayback?source=youtube&*c=TVHTML5&*oad=$domain=youtube.com
+
+! uBO scriptlet rules; executed by the generic upstream scriptlet runtime.
+www.youtube.com##+js(trusted-replace-fetch-response, '"adPlacements"', '"no_ads"', player?)
+www.youtube.com##+js(trusted-replace-fetch-response, '"adSlots"', '"no_ads"', player?)
+m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.playerAds, undefined)
+m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.adPlacements, undefined)
+m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.adSlots, undefined)
+m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(json-prune, playerResponse.adPlacements playerResponse.playerAds playerResponse.adSlots adPlacements playerAds adSlots important)
