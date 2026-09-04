@@ -3,8 +3,7 @@
 ! expressions, third-party/resource/domain options, and ## cosmetic selectors.
 ! Legacy domain-only entries are interpreted as ||domain^ for compatibility.
 #
-# Deliberately excluded so pages keep working:
-#   google.com, googleapis.com, gstatic.com, youtube.com, ytimg.com, cloudflare.com
+# High-breakage first-party platform rules are left to remotely maintained lists.
 
 # --- Google / DoubleClick advertising ---
 doubleclick.net
@@ -255,19 +254,3 @@ tkqlhce.com
 ##[id^="div-gpt-ad-"]
 ##[data-ad-slot]
 ##.ad-banner
-
-! --- YouTube network and scriptlet filters ---
-||youtube.com/api/stats/ads^
-||youtube.com/pagead/^
-||youtube.com/ptracking^
-||youtube.com/get_midroll_info^
-*_ad_$media,domain=youtube.com,third-party
-||googlevideo.com/initplayback?source=youtube&*c=TVHTML5&*oad=$domain=youtube.com
-
-! uBO scriptlet rules; executed by the generic upstream scriptlet runtime.
-www.youtube.com##+js(trusted-replace-fetch-response, '"adPlacements"', '"no_ads"', player?)
-www.youtube.com##+js(trusted-replace-fetch-response, '"adSlots"', '"no_ads"', player?)
-m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.playerAds, undefined)
-m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.adPlacements, undefined)
-m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(set, ytInitialPlayerResponse.adSlots, undefined)
-m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(json-prune, playerResponse.adPlacements playerResponse.playerAds playerResponse.adSlots adPlacements playerAds adSlots important)
