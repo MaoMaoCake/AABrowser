@@ -36,6 +36,7 @@ jobs:
         with:
           languages: java-kotlin
           build-mode: manual
+          queries: security-extended
 
       - name: Build application
         run: bash ./gradlew :app:compileDebugKotlin --no-daemon
