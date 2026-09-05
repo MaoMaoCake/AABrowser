@@ -50,6 +50,27 @@ class FilterEngineTest {
     }
 
     @Test
+    fun `literal filters preserve anchors and case behavior`() {
+        val substring = engine("/Advertising/Banner.js")
+        assertTrue(substring.blocks("https://cdn.test/advertising/banner.js?v=1"))
+
+        val exactCase = engine("/Advertising/Banner.js${'$'}match-case")
+        assertTrue(exactCase.blocks("https://cdn.test/Advertising/Banner.js"))
+        assertFalse(exactCase.blocks("https://cdn.test/advertising/banner.js"))
+
+        val fullyAnchored = engine("|https://exact.test/ad.js|")
+        assertTrue(fullyAnchored.blocks("https://exact.test/ad.js"))
+        assertFalse(fullyAnchored.blocks("https://exact.test/ad.js?v=1"))
+    }
+
+    @Test
+    fun `host anchored literal paths include subdomains but not lookalikes`() {
+        val engine = engine("||ads.example.test/tracker.js")
+        assertTrue(engine.blocks("https://cdn.ads.example.test/tracker.js?v=1"))
+        assertFalse(engine.blocks("https://ads.example.test.evil.test/tracker.js"))
+    }
+
+    @Test
     fun `cosmetic rules respect domains and exceptions`() {
         val engine = engine(
             "##.generic-ad",
@@ -94,6 +115,29 @@ class FilterEngineTest {
             "https://disabled.example.test/app.js",
             type = FilterEngine.ResourceType.SCRIPT
         ))
+    }
+
+    @Test
+    fun `badfilter works before rules and exact network duplicates are compiled once`() {
+        val engine = engine(
+            "||disabled-before.test^${'$'}script,badfilter",
+            "||disabled-before.test^${'$'}script",
+            "||deduplicated.test^",
+            "||deduplicated.test^"
+        )
+        assertFalse(engine.blocks(
+            "https://disabled-before.test/app.js",
+            type = FilterEngine.ResourceType.SCRIPT
+        ))
+        assertTrue(engine.blocks("https://deduplicated.test/ad.js"))
+        assertTrue(engine.ruleCount == 1)
+    }
+
+    @Test
+    fun `option scanner preserves whitespace and domain exclusions`() {
+        val engine = engine("||cdn.test^${'$'} third-party , script , domain=news.test|~paid.news.test ")
+        assertTrue(engine.blocks("https://cdn.test/ad.js", "https://news.test", FilterEngine.ResourceType.SCRIPT))
+        assertFalse(engine.blocks("https://cdn.test/ad.js", "https://paid.news.test", FilterEngine.ResourceType.SCRIPT))
     }
 
     @Test

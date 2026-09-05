@@ -9,12 +9,27 @@ class FilterEngine private constructor(
     private val cosmeticRules: List<CosmeticRule>,
     private val scriptletRules: List<ScriptletRule>
 ) {
-    private val indexedBlockingRules = networkRules.filterNot(NetworkRule::exception)
-        .filter { it.token != null }.groupBy { it.token!! }
-    private val unindexedBlockingRules = networkRules.filterNot(NetworkRule::exception).filter { it.token == null }
-    private val indexedExceptionRules = networkRules.filter(NetworkRule::exception)
-        .filter { it.token != null }.groupBy { it.token!! }
-    private val unindexedExceptionRules = networkRules.filter(NetworkRule::exception).filter { it.token == null }
+    private val indexedBlockingRules: Map<String, List<NetworkRule>>
+    private val unindexedBlockingRules: List<NetworkRule>
+    private val indexedExceptionRules: Map<String, List<NetworkRule>>
+    private val unindexedExceptionRules: List<NetworkRule>
+
+    init {
+        val blocking = HashMap<String, MutableList<NetworkRule>>()
+        val blockingUnindexed = ArrayList<NetworkRule>()
+        val exceptions = HashMap<String, MutableList<NetworkRule>>()
+        val exceptionsUnindexed = ArrayList<NetworkRule>()
+        networkRules.forEach { rule ->
+            val targetIndex = if (rule.exception) exceptions else blocking
+            val targetUnindexed = if (rule.exception) exceptionsUnindexed else blockingUnindexed
+            if (rule.token == null) targetUnindexed += rule
+            else targetIndex.getOrPut(rule.token) { ArrayList() } += rule
+        }
+        indexedBlockingRules = blocking
+        unindexedBlockingRules = blockingUnindexed
+        indexedExceptionRules = exceptions
+        unindexedExceptionRules = exceptionsUnindexed
+    }
 
     enum class ResourceType { SCRIPT, IMAGE, STYLESHEET, FONT, MEDIA, XHR, SUBDOCUMENT, OTHER }
 
@@ -83,15 +98,12 @@ class FilterEngine private constructor(
         unindexed: List<NetworkRule>
     ): Sequence<NetworkRule> = sequence {
         yieldAll(unindexed)
-        URL_TOKENS.findAll(url.lowercase(Locale.ROOT)).map { it.value }.toSet().forEach { token ->
+        urlTokens(url).forEach { token ->
             index[token]?.let { yieldAll(it) }
         }
     }
 
     companion object {
-        private val URL_TOKENS = Regex("[a-z0-9%]{4,}")
-        private val HOSTS_ENTRY = Regex("^(?:0\\.0\\.0\\.0|127\\.0\\.0\\.1|::1)\\s+([^\\s#]+)")
-        private val HOST_ANCHORED_ONLY = Regex("^\\|\\|([a-zA-Z0-9.-]+)\\^$")
         private val UNSUPPORTED_COSMETIC_OPERATORS = arrayOf(
             ":has-text(", ":matches-css(", ":matches-attr(", ":remove(",
             ":style(", ":upward(", ":xpath(", ":others(", ":watch-attr("
@@ -111,23 +123,29 @@ class FilterEngine private constructor(
             parseSources(lines.map { SourceLine(it) })
 
         fun parseSources(lines: Sequence<SourceLine>): FilterEngine {
-            val network = ArrayList<NetworkRule>()
+            // Keying by source both removes exact duplicates and makes $badfilter
+            // deletion O(1), rather than rescanning all previously parsed rules.
+            val network = LinkedHashMap<String, NetworkRule>()
             val cosmetic = ArrayList<CosmeticRule>()
             val scriptlets = ArrayList<ScriptletRule>()
             val disabledNetworkRules = HashSet<String>()
             lines.forEach { sourceLine ->
                 val line = sourceLine.text.trim()
                 if (line.isEmpty() || line.startsWith("!") || line.startsWith("[") || line.startsWith("# ")) return@forEach
-                parseScriptlet(line, sourceLine.trusted)?.let { scriptlets += it; return@forEach }
-                parseCosmetic(line)?.let { cosmetic += it; return@forEach }
+                // Most lines are network filters. Avoid searching them repeatedly
+                // for every cosmetic/scriptlet marker.
+                if (line.indexOf('#') >= 0) {
+                    parseScriptlet(line, sourceLine.trusted)?.let { scriptlets += it; return@forEach }
+                    parseCosmetic(line)?.let { cosmetic += it; return@forEach }
+                }
                 badFilterTarget(line)?.let { target ->
                     disabledNetworkRules += target
-                    network.removeAll { it.source == target }
+                    network.remove(target)
                     return@forEach
                 }
-                if (line !in disabledNetworkRules) parseNetwork(line)?.let(network::add)
+                if (line !in disabledNetworkRules) parseNetwork(line)?.let { network.putIfAbsent(line, it) }
             }
-            return FilterEngine(network, cosmetic, scriptlets)
+            return FilterEngine(network.values.toList(), cosmetic, scriptlets)
         }
 
         private fun parseScriptlet(line: String, trusted: Boolean): ScriptletRule? {
@@ -141,9 +159,7 @@ class FilterEngine private constructor(
             val arguments = parseScriptletArguments(line.substring(split + marker.length, line.length - 1))
                 ?: return null
             if (arguments.isEmpty() && marker == "##+js(") return null
-            val domains = line.substring(0, split).split(',').map(String::trim).filter(String::isNotEmpty)
-            val included = domains.filterNot { it.startsWith("~") }.map(::normalizeHost).toSet()
-            val excluded = domains.filter { it.startsWith("~") }.map { normalizeHost(it.drop(1)) }.toSet()
+            val (included, excluded) = parseDomainList(line, 0, split, ',')
             if (included.isEmpty() && marker == "##+js(") return null
             return ScriptletRule(
                 name = canonicalScriptletName(arguments.firstOrNull().orEmpty()),
@@ -227,9 +243,15 @@ class FilterEngine private constructor(
         private fun badFilterTarget(line: String): String? {
             val split = optionSeparator(line)
             if (split < 0) return null
-            val options = line.substring(split + 1).split(',')
-            if (options.none { it.removePrefix("~").equals("badfilter", ignoreCase = true) }) return null
-            val retained = options.filterNot { it.removePrefix("~").equals("badfilter", ignoreCase = true) }
+            if (line.indexOf("badfilter", split + 1, ignoreCase = true) < 0) return null
+            val retained = ArrayList<String>()
+            var found = false
+            forEachPart(line, split + 1, line.length, ',') { start, end ->
+                val option = line.substring(start, end)
+                if (option.removePrefix("~").equals("badfilter", ignoreCase = true)) found = true
+                else retained += option
+            }
+            if (!found) return null
             val optionsWithoutBadFilter = retained.joinToString(",")
             return line.substring(0, split) + if (optionsWithoutBadFilter.isEmpty()) {
                 ""
@@ -244,16 +266,13 @@ class FilterEngine private constructor(
             val selector = line.substring(split + marker.length).trim()
             if (selector.isEmpty() || selector.startsWith("+") || selector.startsWith("^") ||
                 UNSUPPORTED_COSMETIC_OPERATORS.any(selector::contains)) return null
-            val domains = line.substring(0, split).split(',').map(String::trim).filter(String::isNotEmpty)
-            val included = domains.filterNot { it.startsWith("~") }.map(::normalizeHost).toSet()
-            val excluded = domains.filter { it.startsWith("~") }.map { normalizeHost(it.drop(1)) }.toSet()
+            val (included, excluded) = parseDomainList(line, 0, split, ',')
             return CosmeticRule(selector, marker == "#@#", included, excluded)
         }
 
         private fun parseNetwork(source: String): NetworkRule? {
             var line = source
-            val hostsEntry = HOSTS_ENTRY.find(line)
-            if (hostsEntry != null) line = hostsEntry.groupValues[1]
+            hostsEntry(line)?.let { line = it }
             val exception = line.startsWith("@@")
             if (exception) line = line.drop(2)
             if (line.isBlank() || line.startsWith("#")) return null
@@ -269,7 +288,8 @@ class FilterEngine private constructor(
             val includeDomains = mutableSetOf<String>()
             val excludeDomains = mutableSetOf<String>()
             var unsupported = false
-            optionText.split(',').map(String::trim).filter(String::isNotEmpty).forEach { raw ->
+            forEachPart(optionText, 0, optionText.length, ',') { start, end ->
+                val raw = optionText.substring(start, end)
                 val negated = raw.startsWith("~")
                 val option = raw.removePrefix("~").lowercase(Locale.ROOT)
                 when {
@@ -278,9 +298,16 @@ class FilterEngine private constructor(
                     option == "match-case" -> matchCase = !negated
                     option == "all" && !negated -> Unit
                     option == "important" && !negated -> Unit
-                    option.startsWith("domain=") -> option.substringAfter('=').split('|').forEach { domain ->
-                        if (domain.startsWith("~")) excludeDomains += normalizeHost(domain.drop(1))
-                        else if (domain.isNotBlank()) includeDomains += normalizeHost(domain)
+                    option.startsWith("domain=") -> {
+                        val valueStart = option.indexOf('=') + 1
+                        forEachPart(option, valueStart, option.length, '|') { domainStart, domainEnd ->
+                            val excluded = option[domainStart] == '~'
+                            val actualStart = if (excluded) domainStart + 1 else domainStart
+                            if (actualStart < domainEnd) {
+                                val domain = normalizeHost(option.substring(actualStart, domainEnd))
+                                if (excluded) excludeDomains += domain else includeDomains += domain
+                            }
+                        }
                     }
                     option in TYPE_OPTIONS -> {
                         val type = TYPE_OPTIONS.getValue(option)
@@ -300,10 +327,43 @@ class FilterEngine private constructor(
 
         private fun extractToken(pattern: String): String? {
             if (pattern.length > 2 && pattern.startsWith('/') && pattern.endsWith('/')) return null
-            return URL_TOKENS.findAll(pattern.lowercase(Locale.ROOT))
-                .map { it.value }
-                .filterNot { it in UNHELPFUL_TOKENS }
-                .maxByOrNull(String::length)
+            var best: String? = null
+            var runStart = -1
+            var index = 0
+            while (index <= pattern.length) {
+                val char = pattern.getOrNull(index)
+                val tokenChar = char != null && (char.isAsciiLetterOrDigitIgnoreCase() || char == '%')
+                if (tokenChar && runStart < 0) runStart = index
+                if (!tokenChar && runStart >= 0) {
+                    val length = index - runStart
+                    if (length >= 4 && (best == null || length > best.length)) {
+                        val candidate = pattern.substring(runStart, index).lowercase(Locale.ROOT)
+                        if (candidate !in UNHELPFUL_TOKENS) best = candidate
+                    }
+                    runStart = -1
+                }
+                index++
+            }
+            return best
+        }
+
+        private fun urlTokens(value: String): Set<String> {
+            val output = LinkedHashSet<String>()
+            var runStart = -1
+            var index = 0
+            while (index <= value.length) {
+                val char = value.getOrNull(index)
+                val tokenChar = char != null && (char.isAsciiLetterOrDigitIgnoreCase() || char == '%')
+                if (tokenChar && runStart < 0) runStart = index
+                if (!tokenChar && runStart >= 0) {
+                    if (index - runStart >= 4) {
+                        output += value.substring(runStart, index).lowercase(Locale.ROOT)
+                    }
+                    runStart = -1
+                }
+                index++
+            }
+            return output
         }
 
         private fun optionSeparator(line: String): Int {
@@ -320,16 +380,19 @@ class FilterEngine private constructor(
             if (isDomainOnly(normalized)) {
                 return HostPattern(normalizeHost(normalized))
             }
-            val hostOnly = HOST_ANCHORED_ONLY.matchEntire(text)
+            val hostOnly = hostAnchoredDomain(text)
             if (hostOnly != null) {
-                return HostPattern(normalizeHost(hostOnly.groupValues[1]))
+                return HostPattern(normalizeHost(hostOnly))
             }
             var pattern = text
             val hostAnchored = pattern.startsWith("||")
             val startAnchored = !hostAnchored && pattern.startsWith('|')
             val endAnchored = pattern.endsWith('|')
             pattern = when { hostAnchored -> pattern.drop(2); startAnchored -> pattern.drop(1); else -> pattern }
-            if (endAnchored) pattern = pattern.dropLast(1)
+            if (endAnchored && pattern.isNotEmpty()) pattern = pattern.dropLast(1)
+            if ('*' !in pattern && '^' !in pattern) {
+                return LiteralPattern(pattern, matchCase, hostAnchored, startAnchored, endAnchored)
+            }
             val regex = StringBuilder()
             when { hostAnchored -> regex.append("^[a-z][a-z0-9+.-]*://(?:[^/?#]*\\.)?"); startAnchored -> regex.append('^') }
             pattern.forEach { char ->
@@ -350,6 +413,79 @@ class FilterEngine private constructor(
         }
 
         private fun Char.isAsciiLetterOrDigit(): Boolean = this in 'a'..'z' || this in '0'..'9'
+
+        private fun Char.isAsciiLetterOrDigitIgnoreCase(): Boolean =
+            this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
+
+        private fun hostAnchoredDomain(value: String): String? {
+            if (value.length <= 3 || !value.startsWith("||") || !value.endsWith('^')) return null
+            val start = 2
+            val end = value.length - 1
+            if (start >= end || !value[start].isAsciiLetterOrDigitIgnoreCase() ||
+                !value[end - 1].isAsciiLetterOrDigitIgnoreCase()) return null
+            if ((start until end).any {
+                    val char = value[it]
+                    !char.isAsciiLetterOrDigitIgnoreCase() && char != '.' && char != '-'
+                }) return null
+            return value.substring(start, end)
+        }
+
+        private fun hostsEntry(value: String): String? {
+            val prefixLength = when {
+                value.startsWith("0.0.0.0") -> 7
+                value.startsWith("127.0.0.1") -> 9
+                value.startsWith("::1") -> 3
+                else -> return null
+            }
+            if (value.getOrNull(prefixLength)?.isWhitespace() != true) return null
+            var start = prefixLength
+            while (start < value.length && value[start].isWhitespace()) start++
+            if (start == value.length || value[start] == '#') return null
+            var end = start
+            while (end < value.length && !value[end].isWhitespace() && value[end] != '#') end++
+            return value.substring(start, end)
+        }
+
+        private fun parseDomainList(
+            value: String,
+            start: Int,
+            end: Int,
+            delimiter: Char
+        ): Pair<Set<String>, Set<String>> {
+            val included = LinkedHashSet<String>()
+            val excluded = LinkedHashSet<String>()
+            forEachPart(value, start, end, delimiter) { partStart, partEnd ->
+                val isExcluded = value[partStart] == '~'
+                val actualStart = if (isExcluded) partStart + 1 else partStart
+                if (actualStart < partEnd) {
+                    val domain = normalizeHost(value.substring(actualStart, partEnd))
+                    if (isExcluded) excluded += domain else included += domain
+                }
+            }
+            return included to excluded
+        }
+
+        private inline fun forEachPart(
+            value: String,
+            start: Int,
+            end: Int,
+            delimiter: Char,
+            action: (start: Int, end: Int) -> Unit
+        ) {
+            var partStart = start
+            var index = start
+            while (index <= end) {
+                if (index == end || value[index] == delimiter) {
+                    var trimmedStart = partStart
+                    var trimmedEnd = index
+                    while (trimmedStart < trimmedEnd && value[trimmedStart].isWhitespace()) trimmedStart++
+                    while (trimmedEnd > trimmedStart && value[trimmedEnd - 1].isWhitespace()) trimmedEnd--
+                    if (trimmedStart < trimmedEnd) action(trimmedStart, trimmedEnd)
+                    partStart = index + 1
+                }
+                index++
+            }
+        }
 
         private fun appendRegexLiteral(output: StringBuilder, char: Char) {
             if (char == '\\' || char == '.' || char == '[' || char == ']' || char == '{' ||
@@ -397,6 +533,40 @@ class FilterEngine private constructor(
 
     private data class RegexPattern(val regex: Regex) : UrlPattern {
         override fun matches(url: String, requestHost: String): Boolean = regex.containsMatchIn(url)
+    }
+
+    private data class LiteralPattern(
+        val text: String,
+        val matchCase: Boolean,
+        val hostAnchored: Boolean,
+        val startAnchored: Boolean,
+        val endAnchored: Boolean
+    ) : UrlPattern {
+        override fun matches(url: String, requestHost: String): Boolean {
+            if (hostAnchored) {
+                val schemeEnd = url.indexOf("://")
+                if (schemeEnd < 1) return false
+                val authorityStart = schemeEnd + 3
+                val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart)
+                    .let { if (it < 0) url.length else it }
+                if (matchesAt(url, authorityStart)) return true
+                var index = authorityStart
+                while (index < authorityEnd) {
+                    if (url[index] == '.' && matchesAt(url, index + 1)) return true
+                    index++
+                }
+                return false
+            }
+            if (startAnchored) return matchesAt(url, 0)
+            if (endAnchored) return matchesAt(url, url.length - text.length)
+            return url.indexOf(text, ignoreCase = !matchCase) >= 0
+        }
+
+        private fun matchesAt(url: String, start: Int): Boolean {
+            if (start < 0 || start + text.length > url.length) return false
+            if (endAnchored && start + text.length != url.length) return false
+            return url.regionMatches(start, text, 0, text.length, ignoreCase = !matchCase)
+        }
     }
 
     private data class NetworkRule(
