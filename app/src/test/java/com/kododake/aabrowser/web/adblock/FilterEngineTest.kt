@@ -1,10 +1,50 @@
 package com.kododake.aabrowser.web.adblock
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FilterEngineTest {
+    @Test
+    fun `compiled snapshot preserves all rule behavior`() {
+        val original = engine(
+            "||ads.test^${'$'}third-party,script,domain=news.test|~paid.news.test",
+            "@@||ads.test/allowed.js",
+            "|https://literal.test/tracker.js|",
+            "/pixel-[0-9]+\\.gif/",
+            "news.test##.advert",
+            "news.test#@#.sponsored",
+            "news.test##+js(set, ads.visible, false)"
+        )
+        val bytes = ByteArrayOutputStream().also { buffer ->
+            DataOutputStream(buffer).use(original::writeSnapshot)
+        }.toByteArray()
+        val restored = DataInputStream(ByteArrayInputStream(bytes)).use(FilterEngine::readSnapshot)
+
+        assertTrue(restored.ruleCount == original.ruleCount)
+        assertTrue(restored.blocks("https://ads.test/banner.js", "https://news.test", FilterEngine.ResourceType.SCRIPT))
+        assertFalse(restored.blocks("https://ads.test/allowed.js", "https://news.test", FilterEngine.ResourceType.SCRIPT))
+        assertTrue(restored.blocks("https://literal.test/tracker.js"))
+        assertTrue(restored.blocks("https://cdn.test/pixel-42.gif"))
+        assertTrue(".advert" in restored.cosmeticCss("https://news.test"))
+        assertTrue(restored.scriptletsFor("https://news.test").single().name == "set-constant")
+    }
+
+    @Test
+    fun `preparsed hosts avoid repeated uri parsing without changing matching`() {
+        val engine = engine("||cdn.test^${'$'}third-party")
+        assertTrue(engine.shouldBlock(FilterEngine.Request(
+            url = "https://cdn.test/ad.js",
+            pageUrl = "https://publisher.test/article",
+            requestHost = "cdn.test",
+            pageHost = "publisher.test"
+        )))
+    }
+
     @Test
     fun `host rules include subdomains but not lookalikes`() {
         val engine = engine("||ads.example.com^")
@@ -32,6 +72,13 @@ class FilterEngineTest {
         assertTrue(engine.blocks("https://cdn.test/ad.js", "https://site.test", FilterEngine.ResourceType.SCRIPT))
         assertFalse(engine.blocks("https://cdn.test/ad.png", "https://site.test", FilterEngine.ResourceType.IMAGE))
         assertFalse(engine.blocks("https://static.cdn.test/app.js", "https://www.cdn.test", FilterEngine.ResourceType.SCRIPT))
+    }
+
+    @Test
+    fun `registrable domain comparison handles common multi-level suffixes`() {
+        val engine = engine("||cdn.publisher.co.uk^${'$'}third-party")
+        assertFalse(engine.blocks("https://cdn.publisher.co.uk/ad.js", "https://www.publisher.co.uk"))
+        assertTrue(engine.blocks("https://cdn.publisher.co.uk/ad.js", "https://other.co.uk"))
     }
 
     @Test

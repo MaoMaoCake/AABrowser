@@ -57,6 +57,8 @@ fun configureWebView(
     val appContext = webView.context.applicationContext
     // Written on the UI thread, read by shouldInterceptRequest on WebView's background thread.
     val currentPageUrl = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    val currentPageHost = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    val shieldsEnabled = java.util.concurrent.atomic.AtomicBoolean(BrowserPreferences.isShieldsEnabled(appContext))
 
     with(webView) {
         setBackgroundColor(Color.TRANSPARENT)
@@ -97,8 +99,9 @@ fun configureWebView(
         applyBrowserIdentity(userAgentProfile, useDesktopMode)
         // Compile filters in the background. External navigation is gated by
         // loadUrlWhenShieldsReady, so no page requests can bypass the engine.
-        if (BrowserPreferences.isShieldsEnabled(appContext)) AdBlocker.ensureLoadedAsync(appContext)
-        UboScriptletRuntime.install(this, BrowserPreferences.isShieldsEnabled(appContext))
+        setTag(R.id.webview_shields_enabled_tag, shieldsEnabled)
+        if (shieldsEnabled.get()) AdBlocker.ensureLoadedAsync(appContext)
+        UboScriptletRuntime.install(this, shieldsEnabled.get())
 
         CookieManager.getInstance().also {
             it.setAcceptCookie(true)
@@ -112,12 +115,13 @@ fun configureWebView(
                 view: WebView,
                 request: WebResourceRequest
             ): WebResourceResponse? {
-                if (!BrowserPreferences.isShieldsEnabled(appContext)) {
+                if (!shieldsEnabled.get()) {
                     return null
                 }
                 return AdBlocker.interceptOrNull(
                     requestUrl = request.url,
                     pageUrl = currentPageUrl.get(),
+                    pageHost = currentPageHost.get(),
                     isMainFrame = request.isForMainFrame,
                     requestHeaders = request.requestHeaders
                 )
@@ -145,7 +149,8 @@ fun configureWebView(
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 currentPageUrl.set(url)
-                if (BrowserPreferences.isShieldsEnabled(appContext)) {
+                currentPageHost.set(url?.toUri()?.host)
+                if (shieldsEnabled.get()) {
                     UboScriptletRuntime.runFallbackIfNeeded(view)
                 }
                 val stringUrl = url
@@ -168,8 +173,9 @@ fun configureWebView(
             override fun onPageFinished(view: WebView, url: String?) {
                 super.onPageFinished(view, url)
                 currentPageUrl.set(url)
+                currentPageHost.set(url?.toUri()?.host)
                 view.evaluateJavascript(SpeechRecognitionBridge.POLYFILL_JS, null)
-                if (BrowserPreferences.isShieldsEnabled(appContext)) {
+                if (shieldsEnabled.get()) {
                     AdBlocker.cosmeticScript(url)?.let { view.evaluateJavascript(it, null) }
                 }
                 url?.let(callbacks.onUrlChange)
@@ -408,8 +414,23 @@ fun WebView.updatePageDarkening(enabled: Boolean) {
 }
 
 fun WebView.updateShieldsEnabled(enabled: Boolean) {
-    UboScriptletRuntime.install(this, enabled)
-    reload()
+    val state = (getTag(R.id.webview_shields_enabled_tag) as? java.util.concurrent.atomic.AtomicBoolean)
+        ?: java.util.concurrent.atomic.AtomicBoolean(enabled).also {
+            setTag(R.id.webview_shields_enabled_tag, it)
+        }
+    state.set(enabled)
+    if (!enabled) {
+        UboScriptletRuntime.install(this, false)
+        reload()
+        return
+    }
+    val target = this
+    AdBlocker.runWhenLoaded(context.applicationContext) {
+        if (state.get() && target.parent != null) {
+            UboScriptletRuntime.install(target, true)
+            target.reload()
+        }
+    }
 }
 
 fun WebView.releaseCompletely() {

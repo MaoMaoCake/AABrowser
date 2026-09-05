@@ -1,6 +1,9 @@
 package com.kododake.aabrowser.web.adblock
 
+import java.io.DataInput
+import java.io.DataOutput
 import java.net.URI
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 
 /** Immutable parser/matcher for the commonly used subset of uBlock static filters. */
@@ -13,6 +16,12 @@ class FilterEngine private constructor(
     private val unindexedBlockingRules: List<NetworkRule>
     private val indexedExceptionRules: Map<String, List<NetworkRule>>
     private val unindexedExceptionRules: List<NetworkRule>
+    private val globalCosmeticRules: List<CosmeticRule>
+    private val cosmeticRulesByDomain: Map<String, List<CosmeticRule>>
+    private val entityCosmeticRules: List<CosmeticRule>
+    private val globalScriptletRules: List<ScriptletRule>
+    private val scriptletRulesByDomain: Map<String, List<ScriptletRule>>
+    private val entityScriptletRules: List<ScriptletRule>
 
     init {
         val blocking = HashMap<String, MutableList<NetworkRule>>()
@@ -29,6 +38,42 @@ class FilterEngine private constructor(
         unindexedBlockingRules = blockingUnindexed
         indexedExceptionRules = exceptions
         unindexedExceptionRules = exceptionsUnindexed
+
+        val globalCosmetic = ArrayList<CosmeticRule>()
+        val cosmeticByDomain = HashMap<String, MutableList<CosmeticRule>>()
+        val entityCosmetic = ArrayList<CosmeticRule>()
+        cosmeticRules.forEach { rule ->
+            if (rule.includedDomains.isEmpty()) globalCosmetic += rule
+            else {
+                var hasEntity = false
+                rule.includedDomains.forEach { domain ->
+                    if (domain.endsWith(".*")) hasEntity = true
+                    else cosmeticByDomain.getOrPut(domain) { ArrayList() } += rule
+                }
+                if (hasEntity) entityCosmetic += rule
+            }
+        }
+        globalCosmeticRules = globalCosmetic
+        cosmeticRulesByDomain = cosmeticByDomain
+        entityCosmeticRules = entityCosmetic
+
+        val globalScriptlets = ArrayList<ScriptletRule>()
+        val scriptletsByDomain = HashMap<String, MutableList<ScriptletRule>>()
+        val entityScriptlets = ArrayList<ScriptletRule>()
+        scriptletRules.forEach { rule ->
+            if (rule.includedDomains.isEmpty()) globalScriptlets += rule
+            else {
+                var hasEntity = false
+                rule.includedDomains.forEach { domain ->
+                    if (domain.endsWith(".*")) hasEntity = true
+                    else scriptletsByDomain.getOrPut(domain) { ArrayList() } += rule
+                }
+                if (hasEntity) entityScriptlets += rule
+            }
+        }
+        globalScriptletRules = globalScriptlets
+        scriptletRulesByDomain = scriptletsByDomain
+        entityScriptletRules = entityScriptlets
     }
 
     enum class ResourceType { SCRIPT, IMAGE, STYLESHEET, FONT, MEDIA, XHR, SUBDOCUMENT, OTHER }
@@ -36,7 +81,9 @@ class FilterEngine private constructor(
     data class Request(
         val url: String,
         val pageUrl: String?,
-        val resourceType: ResourceType = ResourceType.OTHER
+        val resourceType: ResourceType = ResourceType.OTHER,
+        val requestHost: String? = null,
+        val pageHost: String? = null
     )
 
     data class SourceLine(val text: String, val trusted: Boolean = false)
@@ -48,23 +95,25 @@ class FilterEngine private constructor(
     )
 
     fun shouldBlock(request: Request): Boolean {
-        val requestHost = hostOf(request.url) ?: return false
-        val pageHost = hostOf(request.pageUrl)
+        val requestHost = request.requestHost?.let(::normalizeHost) ?: hostOf(request.url) ?: return false
+        val pageHost = request.pageHost?.let(::normalizeHost) ?: hostOf(request.pageUrl)
         val context = MatchContext(
             request,
             requestHost,
             pageHost,
-            pageHost != null && siteKey(requestHost) != siteKey(pageHost)
+            pageHost != null && !sameSite(requestHost, pageHost)
         )
-        if (candidates(request.url, indexedExceptionRules, unindexedExceptionRules).any { it.matches(context) }) return false
-        return candidates(request.url, indexedBlockingRules, unindexedBlockingRules).any { it.matches(context) }
+        if (unindexedExceptionRules.any { it.matches(context) } ||
+            matchesIndexed(request.url, indexedExceptionRules, context)) return false
+        if (unindexedBlockingRules.any { it.matches(context) }) return true
+        return matchesIndexed(request.url, indexedBlockingRules, context)
     }
 
     fun cosmeticCss(pageUrl: String?): String {
         val host = hostOf(pageUrl) ?: return ""
         val hidden = LinkedHashSet<String>()
         val exceptions = HashSet<String>()
-        cosmeticRules.forEach { rule ->
+        domainCandidates(host, globalCosmeticRules, cosmeticRulesByDomain, entityCosmeticRules).forEach { rule ->
             if (rule.appliesTo(host)) {
                 if (rule.exception) exceptions += rule.selector else hidden += rule.selector
             }
@@ -75,11 +124,12 @@ class FilterEngine private constructor(
 
     fun scriptletsFor(pageUrl: String?): List<ScriptletInvocation> {
         val host = hostOf(pageUrl) ?: return emptyList()
-        val exceptions = scriptletRules.filter { it.exception && it.appliesTo(host) }
+        val candidates = domainCandidates(host, globalScriptletRules, scriptletRulesByDomain, entityScriptletRules)
+        val exceptions = candidates.filter { it.exception && it.appliesTo(host) }
         if (exceptions.any { it.arguments.isEmpty() }) return emptyList()
         val excepted = exceptions.mapTo(HashSet()) { it.key }
         val selected = LinkedHashMap<Pair<String, List<String>>, ScriptletInvocation>()
-        scriptletRules.asSequence()
+        candidates.asSequence()
             .filter { !it.exception && it.appliesTo(host) && it.key !in excepted }
             .forEach { rule ->
                 val existing = selected[rule.key]
@@ -90,20 +140,105 @@ class FilterEngine private constructor(
         return selected.values.toList()
     }
 
+    private fun <T> domainCandidates(
+        host: String,
+        global: List<T>,
+        byDomain: Map<String, List<T>>,
+        entities: List<T>
+    ): List<T> {
+        val result = ArrayList<T>(global.size + 16)
+        result.addAll(global)
+        var suffixStart = 0
+        while (suffixStart < host.length) {
+            byDomain[host.substring(suffixStart)]?.let(result::addAll)
+            val dot = host.indexOf('.', suffixStart)
+            if (dot < 0) break
+            suffixStart = dot + 1
+        }
+        result.addAll(entities)
+        return result
+    }
+
     val ruleCount: Int get() = networkRules.size + cosmeticRules.size + scriptletRules.size
 
-    private fun candidates(
-        url: String,
-        index: Map<String, List<NetworkRule>>,
-        unindexed: List<NetworkRule>
-    ): Sequence<NetworkRule> = sequence {
-        yieldAll(unindexed)
-        urlTokens(url).forEach { token ->
-            index[token]?.let { yieldAll(it) }
+    internal fun writeSnapshot(output: DataOutput) {
+        output.writeInt(networkRules.size)
+        networkRules.forEach { rule ->
+            when (val pattern = rule.pattern) {
+                is HostPattern -> {
+                    output.writeByte(PATTERN_HOST)
+                    output.writeSizedString(pattern.host)
+                }
+                is RegexPattern -> {
+                    output.writeByte(PATTERN_REGEX)
+                    output.writeSizedString(pattern.regex.pattern)
+                    output.writeBoolean(RegexOption.IGNORE_CASE in pattern.regex.options)
+                }
+                is LiteralPattern -> {
+                    output.writeByte(PATTERN_LITERAL)
+                    output.writeSizedString(pattern.text)
+                    output.writeBoolean(pattern.matchCase)
+                    output.writeBoolean(pattern.hostAnchored)
+                    output.writeBoolean(pattern.startAnchored)
+                    output.writeBoolean(pattern.endAnchored)
+                }
+            }
+            output.writeBoolean(rule.exception)
+            output.writeNullableString(rule.token)
+            output.writeByte(when (rule.thirdParty) { null -> -1; false -> 0; true -> 1 })
+            output.writeResourceTypes(rule.includeTypes)
+            output.writeResourceTypes(rule.excludeTypes)
+            output.writeStringSet(rule.includeDomains)
+            output.writeStringSet(rule.excludeDomains)
+        }
+        output.writeInt(cosmeticRules.size)
+        cosmeticRules.forEach { rule ->
+            output.writeSizedString(rule.selector)
+            output.writeBoolean(rule.exception)
+            output.writeStringSet(rule.includedDomains)
+            output.writeStringSet(rule.excludedDomains)
+        }
+        output.writeInt(scriptletRules.size)
+        scriptletRules.forEach { rule ->
+            output.writeSizedString(rule.name)
+            output.writeStringList(rule.arguments)
+            output.writeBoolean(rule.exception)
+            output.writeStringSet(rule.includedDomains)
+            output.writeStringSet(rule.excludedDomains)
+            output.writeBoolean(rule.trusted)
         }
     }
 
+    private fun matchesIndexed(
+        value: String,
+        index: Map<String, List<NetworkRule>>,
+        context: MatchContext
+    ): Boolean {
+        var runStart = -1
+        var cursor = 0
+        while (cursor <= value.length) {
+            val char = value.getOrNull(cursor)
+            val tokenChar = char != null && (char.isAsciiLetterOrDigitIgnoreCase() || char == '%')
+            if (tokenChar && runStart < 0) runStart = cursor
+            if (!tokenChar && runStart >= 0) {
+                if (cursor - runStart >= 4) {
+                    val token = value.substring(runStart, cursor).lowercase(Locale.ROOT)
+                    index[token]?.forEach { if (it.matches(context)) return true }
+                }
+                runStart = -1
+            }
+            cursor++
+        }
+        return false
+    }
+
     companion object {
+        private const val PATTERN_HOST = 1
+        private const val PATTERN_REGEX = 2
+        private const val PATTERN_LITERAL = 3
+        private const val MAX_SNAPSHOT_RULES = 2_000_000
+        private const val MAX_SNAPSHOT_COLLECTION_SIZE = 100_000
+        private const val MAX_SNAPSHOT_STRING_BYTES = 16 * 1024 * 1024
         private val UNSUPPORTED_COSMETIC_OPERATORS = arrayOf(
             ":has-text(", ":matches-css(", ":matches-attr(", ":remove(",
             ":style(", ":upward(", ":xpath(", ":others(", ":watch-attr("
@@ -146,6 +281,111 @@ class FilterEngine private constructor(
                 if (line !in disabledNetworkRules) parseNetwork(line)?.let { network.putIfAbsent(line, it) }
             }
             return FilterEngine(network.values.toList(), cosmetic, scriptlets)
+        }
+
+        internal fun readSnapshot(input: DataInput): FilterEngine {
+            val networkCount = input.readCount(MAX_SNAPSHOT_RULES)
+            val network = ArrayList<NetworkRule>(networkCount)
+            repeat(networkCount) {
+                val pattern = when (val type = input.readUnsignedByte()) {
+                    PATTERN_HOST -> HostPattern(input.readSizedString())
+                    PATTERN_REGEX -> RegexPattern(Regex(
+                        input.readSizedString(),
+                        if (input.readBoolean()) setOf(RegexOption.IGNORE_CASE) else emptySet()
+                    ))
+                    PATTERN_LITERAL -> LiteralPattern(
+                        input.readSizedString(), input.readBoolean(), input.readBoolean(),
+                        input.readBoolean(), input.readBoolean()
+                    )
+                    else -> throw IllegalArgumentException("Unknown cached pattern type $type")
+                }
+                val exception = input.readBoolean()
+                val token = input.readNullableString()
+                val thirdParty = when (input.readByte().toInt()) {
+                    -1 -> null
+                    0 -> false
+                    1 -> true
+                    else -> throw IllegalArgumentException("Invalid cached party option")
+                }
+                network += NetworkRule(
+                    pattern, "", exception, token, thirdParty,
+                    input.readResourceTypes(), input.readResourceTypes(),
+                    input.readStringSet(), input.readStringSet()
+                )
+            }
+            val cosmetic = ArrayList<CosmeticRule>()
+            repeat(input.readCount(MAX_SNAPSHOT_RULES)) {
+                cosmetic += CosmeticRule(
+                    input.readSizedString(), input.readBoolean(),
+                    input.readStringSet(), input.readStringSet()
+                )
+            }
+            val scriptlets = ArrayList<ScriptletRule>()
+            repeat(input.readCount(MAX_SNAPSHOT_RULES)) {
+                scriptlets += ScriptletRule(
+                    input.readSizedString(), input.readStringList(), input.readBoolean(),
+                    input.readStringSet(), input.readStringSet(), input.readBoolean()
+                )
+            }
+            return FilterEngine(network, cosmetic, scriptlets)
+        }
+
+        private fun DataOutput.writeSizedString(value: String) {
+            val bytes = value.toByteArray(StandardCharsets.UTF_8)
+            writeInt(bytes.size)
+            write(bytes)
+        }
+
+        private fun DataInput.readSizedString(): String {
+            val size = readCount(MAX_SNAPSHOT_STRING_BYTES)
+            val bytes = ByteArray(size)
+            readFully(bytes)
+            return String(bytes, StandardCharsets.UTF_8)
+        }
+
+        private fun DataOutput.writeNullableString(value: String?) {
+            writeBoolean(value != null)
+            if (value != null) writeSizedString(value)
+        }
+
+        private fun DataInput.readNullableString(): String? =
+            if (readBoolean()) readSizedString() else null
+
+        private fun DataOutput.writeStringSet(values: Set<String>) {
+            writeInt(values.size)
+            values.forEach { writeSizedString(it) }
+        }
+
+        private fun DataInput.readStringSet(): Set<String> {
+            val count = readCount(MAX_SNAPSHOT_COLLECTION_SIZE)
+            return LinkedHashSet<String>(count).apply { repeat(count) { add(readSizedString()) } }
+        }
+
+        private fun DataOutput.writeStringList(values: List<String>) {
+            writeInt(values.size)
+            values.forEach { writeSizedString(it) }
+        }
+
+        private fun DataInput.readStringList(): List<String> {
+            val count = readCount(MAX_SNAPSHOT_COLLECTION_SIZE)
+            return ArrayList<String>(count).apply { repeat(count) { add(readSizedString()) } }
+        }
+
+        private fun DataOutput.writeResourceTypes(values: Set<ResourceType>) {
+            var mask = 0
+            values.forEach { mask = mask or (1 shl it.ordinal) }
+            writeInt(mask)
+        }
+
+        private fun DataInput.readResourceTypes(): Set<ResourceType> {
+            val mask = readInt()
+            return ResourceType.entries.filterTo(LinkedHashSet()) { mask and (1 shl it.ordinal) != 0 }
+        }
+
+        private fun DataInput.readCount(max: Int): Int {
+            val count = readInt()
+            require(count in 0..max) { "Invalid cached collection size $count" }
+            return count
         }
 
         private fun parseScriptlet(line: String, trusted: Boolean): ScriptletRule? {
@@ -347,25 +587,6 @@ class FilterEngine private constructor(
             return best
         }
 
-        private fun urlTokens(value: String): Set<String> {
-            val output = LinkedHashSet<String>()
-            var runStart = -1
-            var index = 0
-            while (index <= value.length) {
-                val char = value.getOrNull(index)
-                val tokenChar = char != null && (char.isAsciiLetterOrDigitIgnoreCase() || char == '%')
-                if (tokenChar && runStart < 0) runStart = index
-                if (!tokenChar && runStart >= 0) {
-                    if (index - runStart >= 4) {
-                        output += value.substring(runStart, index).lowercase(Locale.ROOT)
-                    }
-                    runStart = -1
-                }
-                index++
-            }
-            return output
-        }
-
         private fun optionSeparator(line: String): Int {
             if (line.startsWith('/') && line.lastIndexOf('/') > 0) return line.indexOf('$', line.lastIndexOf('/') + 1)
             return line.indexOf('$')
@@ -503,16 +724,37 @@ class FilterEngine private constructor(
                 return runCatching { Regex(domain.drop(1).dropLast(1)).containsMatchIn(host) }.getOrDefault(false)
             }
             if (domain.endsWith(".*")) {
-                return siteKey(host).substringBefore('.') == domain.dropLast(2).substringAfterLast('.')
+                val entity = domain.substring(0, domain.length - 2).substringAfterLast('.')
+                val siteStart = siteKeyStart(host)
+                val siteLabelEnd = host.indexOf('.', siteStart).let { if (it < 0) host.length else it }
+                return siteLabelEnd - siteStart == entity.length &&
+                    host.regionMatches(siteStart, entity, 0, entity.length, ignoreCase = true)
             }
             return host == domain || host.endsWith(".$domain")
         }
         private val COMMON_SECOND_LEVEL_SUFFIXES = setOf("co.uk", "org.uk", "com.au", "net.au", "co.jp", "co.nz", "com.br", "com.cn", "com.sg", "co.in")
-        private fun siteKey(host: String): String {
-            val labels = normalizeHost(host).split('.')
-            if (labels.size <= 2) return labels.joinToString(".")
-            val lastTwo = labels.takeLast(2).joinToString(".")
-            return if (lastTwo in COMMON_SECOND_LEVEL_SUFFIXES) labels.takeLast(3).joinToString(".") else lastTwo
+        private fun sameSite(first: String, second: String): Boolean {
+            val firstStart = siteKeyStart(first)
+            val secondStart = siteKeyStart(second)
+            val length = first.length - firstStart
+            return second.length - secondStart == length &&
+                first.regionMatches(firstStart, second, secondStart, length, ignoreCase = true)
+        }
+
+        private fun siteKeyStart(host: String): Int {
+            val lastDot = host.lastIndexOf('.')
+            if (lastDot < 0) return 0
+            val secondLastDot = host.lastIndexOf('.', lastDot - 1)
+            if (secondLastDot < 0) return 0
+            val suffixStart = secondLastDot + 1
+            val suffixLength = host.length - suffixStart
+            val hasCommonSecondLevelSuffix = COMMON_SECOND_LEVEL_SUFFIXES.any { suffix ->
+                suffix.length == suffixLength &&
+                    host.regionMatches(suffixStart, suffix, 0, suffixLength, ignoreCase = true)
+            }
+            if (!hasCommonSecondLevelSuffix) return suffixStart
+            val thirdLastDot = host.lastIndexOf('.', secondLastDot - 1)
+            return if (thirdLastDot < 0) 0 else thirdLastDot + 1
         }
     }
 

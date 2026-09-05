@@ -38,7 +38,12 @@ object RemoteFilterListManager {
     private val TRUSTED_LIST_IDS = setOf(
         "ublock-filters", "ublock-privacy", "ublock-unbreak", "ublock-quick-fixes"
     )
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            runnable.run()
+        }, "adblock-list-updater")
+    }
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -125,6 +130,20 @@ object RemoteFilterListManager {
                     trusted = subscription.builtIn && subscription.id in TRUSTED_LIST_IDS
                 ))
             }
+        }
+    }
+
+    /** Cheap cache key; list files are atomically replaced whenever their content changes. */
+    internal fun cacheFingerprint(context: Context): String = buildString {
+        subscriptions(context).forEach { subscription ->
+            val file = cacheFile(context, subscription)
+            append(subscription.id).append(':')
+                .append(subscription.enabled).append(':')
+                .append(subscription.lastUpdated).append(':')
+                .append(subscription.etag.orEmpty()).append(':')
+                .append(subscription.lastModified.orEmpty()).append(':')
+                .append(file.length()).append(':')
+                .append(file.lastModified()).append(';')
         }
     }
 
