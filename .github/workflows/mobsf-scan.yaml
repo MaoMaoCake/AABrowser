@@ -1,0 +1,36 @@
+name: MobSF Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  mobsfscan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run mobsfscan
+        run: |
+          pip install mobsfscan
+          mobsfscan . \
+            --type android \
+            --sarif \
+            --output mobsf.sarif \
+            --no-fail
+
+      - name: Upload results
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: mobsf.sarif
