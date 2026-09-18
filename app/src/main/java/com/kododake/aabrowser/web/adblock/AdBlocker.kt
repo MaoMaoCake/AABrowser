@@ -169,7 +169,9 @@ object AdBlocker {
                     )
                 }
             } finally {
-                if (temporary.exists()) temporary.delete()
+                if (temporary.exists() && !temporary.delete()) {
+                    android.util.Log.w("AdBlocker", "Could not delete temporary engine cache: $temporary")
+                }
             }
         }
     }

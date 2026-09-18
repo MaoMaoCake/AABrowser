@@ -238,6 +238,14 @@ class FilterEngine private constructor(
     }
 
     companion object {
+        private const val SCRIPTLET_MARKER = "##+js("
+        private const val SCRIPTLET_EXCEPTION_MARKER = "#@#+js("
+        private const val ABORT_CURRENT_SCRIPT = "abort-current-script"
+        private const val PREVENT_SET_TIMEOUT = "prevent-setTimeout"
+        private const val PREVENT_SET_INTERVAL = "prevent-setInterval"
+        private const val PREVENT_WINDOW_OPEN = "prevent-window-open"
+        private const val TRUSTED_REPLACE_NODE_TEXT = "trusted-replace-node-text"
+
         private const val PATTERN_HOST = 1
         private const val PATTERN_REGEX = 2
         private const val PATTERN_LITERAL = 3
@@ -395,21 +403,21 @@ class FilterEngine private constructor(
 
         private fun parseScriptlet(line: String, trusted: Boolean): ScriptletRule? {
             val marker = when {
-                "#@#+js(" in line -> "#@#+js("
-                "##+js(" in line -> "##+js("
+                SCRIPTLET_EXCEPTION_MARKER in line -> SCRIPTLET_EXCEPTION_MARKER
+                SCRIPTLET_MARKER in line -> SCRIPTLET_MARKER
                 else -> return null
             }
             if (!line.endsWith(')')) return null
             val split = line.indexOf(marker)
             val arguments = parseScriptletArguments(line.substring(split + marker.length, line.length - 1))
                 ?: return null
-            if (arguments.isEmpty() && marker == "##+js(") return null
+            if (arguments.isEmpty() && marker == SCRIPTLET_MARKER) return null
             val (included, excluded) = parseDomainList(line, 0, split, ',')
-            if (included.isEmpty() && marker == "##+js(") return null
+            if (included.isEmpty() && marker == SCRIPTLET_MARKER) return null
             return ScriptletRule(
                 name = canonicalScriptletName(arguments.firstOrNull().orEmpty()),
                 arguments = arguments.drop(1),
-                exception = marker == "#@#+js(",
+                exception = marker == SCRIPTLET_EXCEPTION_MARKER,
                 includedDomains = included,
                 excludedDomains = excluded,
                 trusted = trusted
@@ -418,39 +426,66 @@ class FilterEngine private constructor(
 
         internal fun parseScriptletArguments(source: String): List<String>? {
             if (source.isBlank()) return emptyList()
-            val output = ArrayList<String>()
-            val current = StringBuilder()
-            var quote: Char? = null
-            var atArgumentStart = true
+            val parser = ScriptletArgumentParser()
             var index = 0
             while (index < source.length) {
                 val char = source[index]
                 val next = source.getOrNull(index + 1)
-                if (char == '\\' && ((quote != null && next == quote) || (quote == null && next == ','))) {
-                    current.append(next)
+                if (parser.isEscapedCharacter(char, next)) {
+                    parser.appendEscaped(next)
                     index += 2
-                    continue
-                }
-                if (quote != null) {
-                    if (char == quote) quote = null else current.append(char)
-                } else if (atArgumentStart && char.isWhitespace()) {
-                    // uBO ignores whitespace before the optional opening quote.
-                } else if (atArgumentStart && char in charArrayOf('\'', '"', '`')) {
-                    quote = char
-                    atArgumentStart = false
-                } else if (char == ',') {
-                    output += current.toString().trim()
-                    current.clear()
-                    atArgumentStart = true
                 } else {
-                    current.append(char)
-                    atArgumentStart = false
+                    parser.accept(char)
+                    index++
                 }
-                index++
             }
-            if (quote != null) return null
-            output += current.toString().trim()
-            return output
+            return parser.finish()
+        }
+
+        private class ScriptletArgumentParser {
+            private val output = ArrayList<String>()
+            private val current = StringBuilder()
+            private var quote: Char? = null
+            private var atArgumentStart = true
+
+            fun isEscapedCharacter(char: Char, next: Char?): Boolean =
+                char == '\\' && next == (quote ?: ',')
+
+            fun appendEscaped(char: Char?) {
+                current.append(char)
+            }
+
+            fun accept(char: Char) {
+                when {
+                    quote != null -> {
+                        if (char == quote) quote = null else current.append(char)
+                    }
+                    atArgumentStart && char.isWhitespace() -> Unit
+                    atArgumentStart && char in charArrayOf('\'', '"', '`') -> {
+                        quote = char
+                        atArgumentStart = false
+                    }
+                    char == ',' -> {
+                        finishArgument()
+                        atArgumentStart = true
+                    }
+                    else -> {
+                        current.append(char)
+                        atArgumentStart = false
+                    }
+                }
+            }
+
+            private fun finishArgument() {
+                output += current.toString().trim()
+                current.clear()
+            }
+
+            fun finish(): List<String>? {
+                if (quote != null) return null
+                finishArgument()
+                return output
+            }
         }
 
         private fun canonicalScriptletName(rawName: String): String {
@@ -459,17 +494,17 @@ class FilterEngine private constructor(
         }
 
         private val SCRIPTLET_ALIASES = mapOf(
-            "abort-current-inline-script" to "abort-current-script",
-            "acis" to "abort-current-script", "acs" to "abort-current-script",
+            "abort-current-inline-script" to ABORT_CURRENT_SCRIPT,
+            "acis" to ABORT_CURRENT_SCRIPT, "acs" to ABORT_CURRENT_SCRIPT,
             "ra" to "remove-attr", "urlskip" to "href-sanitizer",
             "aost" to "abort-on-stack-trace", "prevent-eval-if" to "noeval-if",
             "addEventListener-defuser" to "prevent-addEventListener",
             "aeld" to "prevent-addEventListener", "bab-defuser" to "prevent-bab",
             "nobab" to "prevent-bab", "no-fetch-if" to "prevent-fetch",
-            "no-setTimeout-if" to "prevent-setTimeout", "nostif" to "prevent-setTimeout",
-            "setTimeout-defuser" to "prevent-setTimeout",
-            "no-setInterval-if" to "prevent-setInterval", "nosiif" to "prevent-setInterval",
-            "setInterval-defuser" to "prevent-setInterval",
+            "no-setTimeout-if" to PREVENT_SET_TIMEOUT, "nostif" to PREVENT_SET_TIMEOUT,
+            "setTimeout-defuser" to PREVENT_SET_TIMEOUT,
+            "no-setInterval-if" to PREVENT_SET_INTERVAL, "nosiif" to PREVENT_SET_INTERVAL,
+            "setInterval-defuser" to PREVENT_SET_INTERVAL,
             "no-requestAnimationFrame-if" to "prevent-requestAnimationFrame",
             "norafif" to "prevent-requestAnimationFrame", "set" to "set-constant",
             "trusted-set" to "trusted-set-constant", "no-xhr-if" to "prevent-xhr",
@@ -478,10 +513,10 @@ class FilterEngine private constructor(
             "nano-setInterval-booster" to "adjust-setInterval", "nano-sib" to "adjust-setInterval",
             "nano-setTimeout-booster" to "adjust-setTimeout", "nano-stb" to "adjust-setTimeout",
             "refresh-defuser" to "prevent-refresh", "rc" to "remove-class",
-            "nowoif" to "prevent-window-open", "no-window-open-if" to "prevent-window-open",
-            "window.open-defuser" to "prevent-window-open", "window-close-if" to "close-window",
-            "rmnt" to "remove-node-text", "trusted-rpnt" to "trusted-replace-node-text",
-            "replace-node-text" to "trusted-replace-node-text", "rpnt" to "trusted-replace-node-text",
+            "nowoif" to PREVENT_WINDOW_OPEN, "no-window-open-if" to PREVENT_WINDOW_OPEN,
+            "window.open-defuser" to PREVENT_WINDOW_OPEN, "window-close-if" to "close-window",
+            "rmnt" to "remove-node-text", "trusted-rpnt" to TRUSTED_REPLACE_NODE_TEXT,
+            "replace-node-text" to TRUSTED_REPLACE_NODE_TEXT, "rpnt" to TRUSTED_REPLACE_NODE_TEXT,
             "trusted-rpfr" to "trusted-replace-fetch-response"
         )
 
@@ -526,6 +561,20 @@ class FilterEngine private constructor(
             val optionText = if (optionAt >= 0) line.substring(optionAt + 1) else ""
             if (patternText.isBlank()) return null
 
+            val options = NetworkOptions()
+            forEachPart(optionText, 0, optionText.length, ',') { start, end ->
+                options.accept(optionText.substring(start, end))
+            }
+            // Ignoring action options could turn a filter into a broader blocking rule.
+            if (options.unsupported) return null
+            return NetworkRule(
+                compilePattern(patternText, options.matchCase) ?: return null,
+                source, exception, extractToken(patternText), options.thirdParty,
+                options.includeTypes, options.excludeTypes, options.includeDomains, options.excludeDomains
+            )
+        }
+
+        private class NetworkOptions {
             var thirdParty: Boolean? = null
             var matchCase = false
             val includeTypes = mutableSetOf<ResourceType>()
@@ -533,8 +582,8 @@ class FilterEngine private constructor(
             val includeDomains = mutableSetOf<String>()
             val excludeDomains = mutableSetOf<String>()
             var unsupported = false
-            forEachPart(optionText, 0, optionText.length, ',') { start, end ->
-                val raw = optionText.substring(start, end)
+
+            fun accept(raw: String) {
                 val negated = raw.startsWith("~")
                 val option = raw.removePrefix("~").lowercase(Locale.ROOT)
                 when {
@@ -543,31 +592,20 @@ class FilterEngine private constructor(
                     option == "match-case" -> matchCase = !negated
                     option == "all" && !negated -> Unit
                     option == "important" && !negated -> Unit
-                    option.startsWith("domain=") -> {
-                        val valueStart = option.indexOf('=') + 1
-                        forEachPart(option, valueStart, option.length, '|') { domainStart, domainEnd ->
-                            val excluded = option[domainStart] == '~'
-                            val actualStart = if (excluded) domainStart + 1 else domainStart
-                            if (actualStart < domainEnd) {
-                                val domain = normalizeHost(option.substring(actualStart, domainEnd))
-                                if (excluded) excludeDomains += domain else includeDomains += domain
-                            }
-                        }
-                    }
+                    option.startsWith("domain=") -> addDomains(option)
                     option in TYPE_OPTIONS -> {
-                        val type = TYPE_OPTIONS.getValue(option)
-                        if (negated) excludeTypes += type else includeTypes += type
+                        val types = if (negated) excludeTypes else includeTypes
+                        types += TYPE_OPTIONS.getValue(option)
                     }
                     else -> unsupported = true
                 }
             }
-            // Silently ignoring an action option such as removeparam or redirect
-            // would turn it into a much broader blocking rule, so skip the rule.
-            if (unsupported) return null
-            return NetworkRule(
-                compilePattern(patternText, matchCase) ?: return null, source, exception, extractToken(patternText), thirdParty,
-                includeTypes, excludeTypes, includeDomains, excludeDomains
-            )
+
+            private fun addDomains(option: String) {
+                val (included, excluded) = parseDomainList(option, option.indexOf('=') + 1, option.length, '|')
+                includeDomains.addAll(included)
+                excludeDomains.addAll(excluded)
+            }
         }
 
         private fun extractToken(pattern: String): String? {
@@ -583,18 +621,28 @@ class FilterEngine private constructor(
                 val tokenChar = char != null && (char.isAsciiLetterOrDigitIgnoreCase() || char == '%')
                 if (tokenChar && runStart < 0) runStart = index
                 if (!tokenChar && runStart >= 0) {
-                    val length = index - runStart
-                    val leftBounded = if (runStart == 0) domainOnly else pattern[runStart - 1] != '*'
-                    val rightBounded = if (index == pattern.length) domainOnly else pattern[index] != '*'
-                    if (leftBounded && rightBounded && length >= 4 && (best == null || length > best.length)) {
-                        val candidate = pattern.substring(runStart, index).lowercase(Locale.ROOT)
-                        if (candidate !in UNHELPFUL_TOKENS) best = candidate
-                    }
+                    best = selectToken(pattern, runStart, index, domainOnly, best)
                     runStart = -1
                 }
                 index++
             }
             return best
+        }
+
+        private fun selectToken(
+            pattern: String,
+            start: Int,
+            end: Int,
+            domainOnly: Boolean,
+            best: String?
+        ): String? {
+            val length = end - start
+            if (length < 4 || (best != null && length <= best.length)) return best
+            val leftBounded = if (start == 0) domainOnly else pattern[start - 1] != '*'
+            val rightBounded = if (end == pattern.length) domainOnly else pattern[end] != '*'
+            if (!leftBounded || !rightBounded) return best
+            val candidate = pattern.substring(start, end).lowercase(Locale.ROOT)
+            return if (candidate in UNHELPFUL_TOKENS) best else candidate
         }
 
         private fun optionSeparator(line: String): Int {
@@ -795,23 +843,27 @@ class FilterEngine private constructor(
         val endAnchored: Boolean
     ) : UrlPattern {
         override fun matches(url: String, requestHost: String): Boolean {
-            if (hostAnchored) {
-                val schemeEnd = url.indexOf("://")
-                if (schemeEnd < 1) return false
-                val authorityStart = schemeEnd + 3
-                val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart)
-                    .let { if (it < 0) url.length else it }
-                if (matchesAt(url, authorityStart)) return true
-                var index = authorityStart
-                while (index < authorityEnd) {
-                    if (url[index] == '.' && matchesAt(url, index + 1)) return true
-                    index++
-                }
-                return false
+            return when {
+                hostAnchored -> matchesHostAnchored(url)
+                startAnchored -> matchesAt(url, 0)
+                endAnchored -> matchesAt(url, url.length - text.length)
+                else -> url.indexOf(text, ignoreCase = !matchCase) >= 0
             }
-            if (startAnchored) return matchesAt(url, 0)
-            if (endAnchored) return matchesAt(url, url.length - text.length)
-            return url.indexOf(text, ignoreCase = !matchCase) >= 0
+        }
+
+        private fun matchesHostAnchored(url: String): Boolean {
+            val schemeEnd = url.indexOf("://")
+            if (schemeEnd < 1) return false
+            val authorityStart = schemeEnd + 3
+            val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart)
+                .let { if (it < 0) url.length else it }
+            if (matchesAt(url, authorityStart)) return true
+            var index = authorityStart
+            while (index < authorityEnd) {
+                if (url[index] == '.' && matchesAt(url, index + 1)) return true
+                index++
+            }
+            return false
         }
 
         private fun matchesAt(url: String, start: Int): Boolean {
