@@ -249,6 +249,45 @@ class FilterEngineTest {
         assertTrue(invocation.name == "trusted-set-constant")
     }
 
+    @Test
+    fun `partial tokens remain matchable at wildcard and open boundaries`() {
+        val cases = listOf(
+            "/advert*" to "https://cdn.test/advertising.js",
+            "*tracking^" to "https://cdn.test/pretracking?x=1",
+            "/advert" to "https://cdn.test/advertising.js",
+            "tracking/" to "https://cdn.test/pretracking/pixel",
+            "||advert*" to "https://advertising.test/pixel"
+        )
+        for ((rule, url) in cases) {
+            val original = engine(rule)
+            assertTrue("Expected $rule to block $url", original.blocks(url))
+            val bytes = ByteArrayOutputStream().also { buffer ->
+                DataOutputStream(buffer).use(original::writeSnapshot)
+            }.toByteArray()
+            val restored = DataInputStream(ByteArrayInputStream(bytes)).use(FilterEngine::readSnapshot)
+            assertTrue("Snapshot: $rule", restored.blocks(url))
+        }
+    }
+
+    @Test
+    fun `indexed and fallback exceptions still override either blocking path`() {
+        for (blocking in listOf("||cdn.test^", "/advert*")) {
+            for (exception in listOf("@@/advert*", "@@||cdn.test/advertising.js")) {
+                val engine = engine(blocking, exception)
+                assertFalse(engine.blocks("https://cdn.test/advertising.js"))
+                assertFalse(engine.blocks("https://unrelated.test/content.js"))
+            }
+        }
+        assertTrue(engine("/advert*").blocks("https://cdn.test/advertising.js"))
+    }
+
+    @Test
+    fun `repeated mixed case tokens preserve matching and exceptions`() {
+        val engine = engine("/TRACKER/", "@@/tracker/allowed^")
+        assertTrue(engine.blocks("https://cdn.test/tracker/TRACKER/pixel"))
+        assertFalse(engine.blocks("https://cdn.test/TRACKER/tracker/allowed?x=1"))
+    }
+
     private fun engine(vararg rules: String) = FilterEngine.parse(rules.asSequence())
 
     private fun FilterEngine.blocks(

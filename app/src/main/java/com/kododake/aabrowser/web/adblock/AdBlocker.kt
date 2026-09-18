@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong
 object AdBlocker {
     private const val FILTERS_ASSET = "adblock/blocklist.txt"
     private const val CACHE_MAGIC = 0x41414246
-    private const val CACHE_VERSION = 1
+    private const val CACHE_VERSION = 2
     private const val MAX_CACHE_BYTES = 256L * 1024 * 1024
 
     @Volatile

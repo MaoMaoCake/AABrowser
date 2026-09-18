@@ -103,10 +103,18 @@ class FilterEngine private constructor(
             pageHost,
             pageHost != null && !sameSite(requestHost, pageHost)
         )
-        if (unindexedExceptionRules.any { it.matches(context) } ||
-            matchesIndexed(request.url, indexedExceptionRules, context)) return false
-        if (unindexedBlockingRules.any { it.matches(context) }) return true
-        return matchesIndexed(request.url, indexedBlockingRules, context)
+        // Build tokens only if an indexed lookup is needed, and reuse them for exceptions.
+        var tokens: Set<String>? = null
+        fun matchesIndex(index: Map<String, List<NetworkRule>>): Boolean {
+            if (index.isEmpty()) return false
+            val requestTokens = tokens ?: urlTokens(request.url).also { tokens = it }
+            return requestTokens.any { token -> index[token]?.any { it.matches(context) } == true }
+        }
+        val blocked = unindexedBlockingRules.any { it.matches(context) } ||
+            matchesIndex(indexedBlockingRules)
+        if (!blocked) return false
+        return !unindexedExceptionRules.any { it.matches(context) } &&
+            !matchesIndex(indexedExceptionRules)
     }
 
     fun cosmeticCss(pageUrl: String?): String {
@@ -209,11 +217,8 @@ class FilterEngine private constructor(
         }
     }
 
-    private fun matchesIndexed(
-        value: String,
-        index: Map<String, List<NetworkRule>>,
-        context: MatchContext
-    ): Boolean {
+    private fun urlTokens(value: String): Set<String> {
+        val tokens = HashSet<String>()
         var runStart = -1
         var cursor = 0
         while (cursor <= value.length) {
@@ -223,13 +228,13 @@ class FilterEngine private constructor(
             if (!tokenChar && runStart >= 0) {
                 if (cursor - runStart >= 4) {
                     val token = value.substring(runStart, cursor).lowercase(Locale.ROOT)
-                    index[token]?.forEach { if (it.matches(context)) return true }
+                    tokens += token
                 }
                 runStart = -1
             }
             cursor++
         }
-        return false
+        return tokens
     }
 
     companion object {
@@ -567,6 +572,9 @@ class FilterEngine private constructor(
 
         private fun extractToken(pattern: String): String? {
             if (pattern.length > 2 && pattern.startsWith('/') && pattern.endsWith('/')) return null
+            // Bare domains have implicit host boundaries. Other patterns may start/end
+            // inside a URL token, and '*' can consume the rest of that token.
+            val domainOnly = isDomainOnly(pattern.lowercase(Locale.ROOT))
             var best: String? = null
             var runStart = -1
             var index = 0
@@ -576,7 +584,9 @@ class FilterEngine private constructor(
                 if (tokenChar && runStart < 0) runStart = index
                 if (!tokenChar && runStart >= 0) {
                     val length = index - runStart
-                    if (length >= 4 && (best == null || length > best.length)) {
+                    val leftBounded = if (runStart == 0) domainOnly else pattern[runStart - 1] != '*'
+                    val rightBounded = if (index == pattern.length) domainOnly else pattern[index] != '*'
+                    if (leftBounded && rightBounded && length >= 4 && (best == null || length > best.length)) {
                         val candidate = pattern.substring(runStart, index).lowercase(Locale.ROOT)
                         if (candidate !in UNHELPFUL_TOKENS) best = candidate
                     }
