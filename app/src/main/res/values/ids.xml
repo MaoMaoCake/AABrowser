@@ -9,6 +9,7 @@
     <item name="webview_pending_shields_url_tag" type="id" />
     <item name="webview_shields_enabled_tag" type="id" />
     <item name="webview_user_agent_profile_tag" type="id" />
+    <item name="webview_drm_l3_script_handler_tag" type="id" />
     <item name="settingsHeaderTitle" type="id" />
     <item name="buttonSettingsBack" type="id" />
     <item name="userAgentTitle" type="id" />
